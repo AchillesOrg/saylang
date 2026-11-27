@@ -168,6 +168,9 @@ def main(argv: list[str] | None = None) -> int:
                 run_source(res.say_code)
             return 0
 
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1

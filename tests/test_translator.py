@@ -1,13 +1,19 @@
 """Tests for the SayLang natural-English translator (offline + mocked LLM)."""
 
+import io
 import json
 import ssl
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from saylang.errors import SayTranslateError
 from saylang.interpreter import run_and_capture
-from saylang.translator import _build_ssl_context, translate_english
+from saylang.translator import (
+    _build_ssl_context,
+    _extract_api_error_message,
+    translate_english,
+)
 
 
 class _FakeHTTPResponse:
@@ -114,6 +120,37 @@ class TestTranslator(unittest.TestCase):
                 "say hello", provider="anthropic", api_key="ant-key"
             )
             self.assertEqual(res_ant.say_code, 'say "from claude"')
+
+    def test_llm_gemini_falls_back_on_503_and_cleans_error_json(self) -> None:
+        called_urls: list[str] = []
+
+        def fake_urlopen(
+            req: object, timeout: int = 15, context: object = None
+        ) -> _FakeHTTPResponse:
+            url = getattr(req, "full_url", "")
+            called_urls.append(url)
+            if len(called_urls) == 1:
+                body = json.dumps(
+                    {"error": {"code": 503, "message": "High demand"}}
+                ).encode("utf-8")
+                raise urllib.error.HTTPError(
+                    url, 503, "Service Unavailable", None, io.BytesIO(body)  # type: ignore[arg-type]
+                )
+            return _FakeHTTPResponse(
+                {"candidates": [{"content": {"parts": [{"text": 'say "fallback ok"'}]}}]}
+            )
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            res = translate_english("say hi", provider="gemini", api_key="k")
+        self.assertEqual(len(called_urls), 2)
+        self.assertIn("gemini-3.8-flash", called_urls[0])
+        self.assertIn("gemini-3.5-flash-lite", called_urls[1])
+        self.assertEqual(res.say_code, 'say "fallback ok"')
+
+        clean = _extract_api_error_message(
+            '{"error": {"code": 503, "message": "Temporarily unavailable"}}'
+        )
+        self.assertEqual(clean, "Temporarily unavailable")
 
 
 if __name__ == "__main__":

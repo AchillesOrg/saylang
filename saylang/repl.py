@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pprint
 import sys
 from collections.abc import Callable
@@ -80,6 +81,9 @@ class SayREPL:
 
     def _write(self, text: str) -> None:
         self.stdout.write(text + "\n")
+        flush = getattr(self.stdout, "flush", None)
+        if callable(flush):
+            flush()
 
     def _run_snippet(self, source: str) -> None:
         program = parse_source(source)
@@ -146,6 +150,11 @@ class SayREPL:
             if not text_arg:
                 self._write("Usage: :english [--offline] <everyday english instruction>")
                 return True
+            if provider == "auto" and any(
+                os.environ.get(k)
+                for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+            ):
+                self._write("Translating... (Ctrl+C to cancel)")
             try:
                 res = translate_english(text_arg, provider=provider)
                 self._write(f"[saylang ({res.backend})]")
@@ -195,13 +204,19 @@ class SayREPL:
                 if not line.strip():
                     continue
                 if line.lstrip().startswith(":"):
-                    if not self._handle_command(line):
-                        return 0
+                    try:
+                        if not self._handle_command(line):
+                            return 0
+                    except KeyboardInterrupt:
+                        self._write("\nCancelled.")
                     continue
                 bare = line.strip().lower()
                 if bare in _BARE_COMMANDS and bare not in self.interpreter.global_env.values:
-                    if not self._handle_command(f":{bare}"):
-                        return 0
+                    try:
+                        if not self._handle_command(f":{bare}"):
+                            return 0
+                    except KeyboardInterrupt:
+                        self._write("\nCancelled.")
                     continue
                 if _opens_block(line):
                     buffer = [line]
@@ -209,6 +224,8 @@ class SayREPL:
                     continue
                 try:
                     self._run_snippet(line)
+                except KeyboardInterrupt:
+                    self._write("\nCancelled.")
                 except SayError as err:
                     self._write(err.format_pretty("<repl>"))
                 continue
@@ -219,6 +236,8 @@ class SayREPL:
                 in_block = False
                 try:
                     self._run_snippet(snippet)
+                except KeyboardInterrupt:
+                    self._write("\nCancelled.")
                 except SayError as err:
                     self._write(err.format_pretty("<repl>"))
             else:

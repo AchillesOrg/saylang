@@ -158,8 +158,36 @@ def _build_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+_GEMINI_FALLBACK_MODELS = (
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest",
+)
+
+
+def _extract_api_error_message(body: str) -> str:
+    """Extract a clean single-line error message from JSON API responses."""
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict):
+            err = parsed.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                return str(err["message"]).strip()
+            if parsed.get("message"):
+                return str(parsed["message"]).strip()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    collapsed = " ".join(body.split())
+    return collapsed[:200] if collapsed else "Unknown API error"
+
+
 def _http_post_json(
-    url: str, payload: dict[str, object], headers: dict[str, str]
+    url: str,
+    payload: dict[str, object],
+    headers: dict[str, str],
+    *,
+    timeout: int = 15,
 ) -> dict[str, object]:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -170,18 +198,20 @@ def _http_post_json(
     )
     ssl_ctx = _build_ssl_context()
     try:
-        with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body)
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")
-        raise SayTranslateError(
-            f"LLM API returned HTTP {exc.code}: {err_body[:300]}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise SayTranslateError(
-            f"Could not reach LLM API: {exc.reason}"
-        ) from exc
+        clean_msg = _extract_api_error_message(err_body)
+        err = SayTranslateError(f"LLM API returned HTTP {exc.code}: {clean_msg}")
+        err.retryable = exc.code in (404, 408, 429, 500, 502, 503, 504)  # type: ignore[attr-defined]
+        raise err from exc
+    except (TimeoutError, urllib.error.URLError) as exc:
+        reason = getattr(exc, "reason", exc)
+        err = SayTranslateError(f"Could not reach LLM API: {reason}")
+        err.retryable = True  # type: ignore[attr-defined]
+        raise err from exc
     except json.JSONDecodeError as exc:
         raise SayTranslateError("Invalid JSON response from LLM API.") from exc
 
@@ -190,25 +220,35 @@ def _call_llm(
     backend: str, api_key: str, model: str | None, prompt: str
 ) -> str:
     if backend == "gemini":
-        chosen = model or "gemini-3.8-flash"
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{chosen}:generateContent?key={api_key}"
-        )
+        candidates_models = (model,) if model else _GEMINI_FALLBACK_MODELS
         payload = {
             "systemInstruction": {"parts": [{"text": _SAYLANG_GRAMMAR_GUIDE}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.1},
         }
-        resp = _http_post_json(url, payload, {})
-        try:
-            candidates = resp["candidates"]  # type: ignore[index]
-            parts = candidates[0]["content"]["parts"]
-            return "".join(str(p.get("text", "")) for p in parts)
-        except (KeyError, IndexError, TypeError) as exc:
-            raise SayTranslateError(
-                "Unexpected response structure from Gemini API."
-            ) from exc
+        last_err: SayTranslateError | None = None
+        for chosen in candidates_models:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{chosen}:generateContent?key={api_key}"
+            )
+            try:
+                resp = _http_post_json(url, payload, {})
+            except SayTranslateError as exc:
+                last_err = exc
+                if getattr(exc, "retryable", False):
+                    continue
+                raise
+            try:
+                candidates = resp["candidates"]  # type: ignore[index]
+                parts = candidates[0]["content"]["parts"]
+                return "".join(str(p.get("text", "")) for p in parts)
+            except (KeyError, IndexError, TypeError) as exc:
+                raise SayTranslateError(
+                    "Unexpected response structure from Gemini API."
+                ) from exc
+        assert last_err is not None
+        raise last_err
 
     if backend == "openai":
         chosen = model or "gpt-4o-mini"
@@ -768,7 +808,22 @@ def translate_english(
     last_error: SayError | None = None
 
     for attempt in range(max_retries + 1):
-        raw_reply = _call_llm(backend, resolved_key, model, prompt)
+        try:
+            raw_reply = _call_llm(backend, resolved_key, model, prompt)
+        except SayTranslateError as err:
+            if provider == "auto" and getattr(err, "retryable", False):
+                try:
+                    offline_code = _translate_offline(text)
+                    return TranslationResult(
+                        say_code=offline_code,
+                        backend="offline",
+                        notes=[f"LLM unavailable ({err.message}); fell back to offline rules."],
+                    )
+                except SayTranslateError:
+                    raise SayTranslateError(
+                        f"{err.message} (Tip: use :english --offline for simpler built-in commands.)"
+                    ) from err
+            raise
         candidate = _strip_code_fences(raw_reply)
         try:
             parse_source(candidate)

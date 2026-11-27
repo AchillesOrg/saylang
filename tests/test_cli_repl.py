@@ -132,6 +132,23 @@ class TestCLIAndREPL(unittest.TestCase):
             self.assertEqual(main(["banner"]), 0)
         self.assertIn("Saylang", buf.getvalue())
 
+    def test_repl_ctrl_c_during_command_cancels_cleanly(self) -> None:
+        inputs = iter([":english hello", 'say "still alive"', "quit"])
+        out = io.StringIO()
+
+        def fake_input(prompt: str = "") -> str:
+            try:
+                return next(inputs)
+            except StopIteration as exc:
+                raise EOFError from exc
+
+        repl = SayREPL(stdout=out, input_fn=fake_input)
+        with patch("saylang.repl.translate_english", side_effect=KeyboardInterrupt):
+            rc = repl.run()
+        self.assertEqual(rc, 0)
+        self.assertIn("Cancelled.", out.getvalue())
+        self.assertIn("still alive\n", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
