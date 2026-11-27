@@ -13,9 +13,11 @@ from saylang.nana import (
     NanaBuffer,
     discover_pl_files,
     highlight_saylang_line,
+    load_bg_mode,
     render_file_picker,
     render_template_picker,
     render_welcome_menu,
+    save_bg_mode,
 )
 from saylang.parser import parse_source
 from saylang.repl import SayREPL
@@ -68,22 +70,58 @@ class TestNanaEditor(unittest.TestCase):
     def test_tui_screens_render_cleanly_wide_and_narrow(self) -> None:
         examples_dir = Path(__file__).resolve().parent.parent / "examples"
         files = discover_pl_files(examples_dir)
-        for rows, cols in ((30, 100), (20, 60)):
-            welcome = render_welcome_menu(1, rows, cols, has_active_buffer=False)
-            self.assertIn("New File", welcome)
-            self.assertIn("Start from Template", welcome)
-            self.assertIn("Open File", welcome)
+        row_split_re = re.compile(r"\x1b\[(\d+);1H([^\x1b]*(?:\x1b\[[0-9;]*[mK])*)")
+        full_ansi_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
-            welcome_active = render_welcome_menu(0, rows, cols, has_active_buffer=True)
-            self.assertIn("Resume Editor", welcome_active)
-            self.assertIn("Run with Flags", welcome_active)
+        def assert_adaptive_frame(frame: str, rows: int, cols: int) -> None:
+            self.assertNotIn("\n", frame)
+            self.assertNotIn("\x1b[7m", frame)
+            for r in range(1, rows + 1):
+                token = f"\x1b[{r};1H"
+                self.assertIn(token, frame, f"Missing row positioning {token}")
+                start = frame.index(token) + len(token)
+                end = frame.find("\x1b[K", start)
+                self.assertGreater(end, start - 1)
+                vis = full_ansi_re.sub("", frame[start:end])
+                self.assertLessEqual(len(vis), cols)
 
-            tpl_screen = render_template_picker(1, rows, cols)
-            self.assertIn("TTY Clock", tpl_screen)
+        for bg_mode in ("mica", "black"):
+            for rows, cols in ((12, 42), (24, 80), (45, 160)):
+                welcome = render_welcome_menu(
+                    1, rows, cols, has_active_buffer=False, bg_mode=bg_mode
+                )
+                assert_adaptive_frame(welcome, rows, cols)
+                self.assertIn("New File", welcome)
+                self.assertIn("Start from Template", welcome)
+                self.assertIn("Open File", welcome)
+                if bg_mode == "black":
+                    self.assertIn("\x1b[40;48;2;0;0;0m", welcome)
+                else:
+                    self.assertIn("\x1b[49m", welcome)
 
-            file_screen = render_file_picker(files, 0, rows, cols, root=examples_dir)
-            self.assertIn(".pl", file_screen)
-            self.assertIn("[Type custom path...]", file_screen)
+                welcome_active = render_welcome_menu(
+                    0, rows, cols, has_active_buffer=True, bg_mode=bg_mode
+                )
+                assert_adaptive_frame(welcome_active, rows, cols)
+                self.assertIn("Resume Editor", welcome_active)
+
+                tpl_screen = render_template_picker(1, rows, cols, bg_mode=bg_mode)
+                assert_adaptive_frame(tpl_screen, rows, cols)
+                self.assertIn("TTY Clock", tpl_screen)
+
+                file_screen = render_file_picker(
+                    files, 0, rows, cols, root=examples_dir, bg_mode=bg_mode
+                )
+                assert_adaptive_frame(file_screen, rows, cols)
+                self.assertIn(".pl", file_screen)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("os.environ", {"SAYLANG_HOME": tmpdir}):
+                self.assertEqual(load_bg_mode(), "mica")
+                save_bg_mode("black")
+                self.assertEqual(load_bg_mode(), "black")
+                save_bg_mode("mica")
+                self.assertEqual(load_bg_mode(), "mica")
 
     def test_buffer_editing_auto_indent_cut_paste_and_save(self) -> None:
         buf = NanaBuffer()

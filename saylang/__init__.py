@@ -31,4 +31,4 @@ __all__ = [
     "translate_english",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

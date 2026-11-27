@@ -19,7 +19,10 @@ from saylang.parser import parse_source
 _RESET = "\x1b[0m"
 _BOLD = "\x1b[1m"
 _DIM = "\x1b[2m"
-_INV = "\x1b[7m"
+_BRIGHT_WHITE = "\x1b[1;97m"
+_BLACK_BG = "\x1b[40;48;2;0;0;0m"
+_BLACK_RESET = "\x1b[0;40;48;2;0;0;0m"
+_DEFAULT_BG = "\x1b[49m"
 _GRAY = "\x1b[90m"
 _STRING_CLR = "\x1b[92m"
 _NUMBER_CLR = "\x1b[93m"
@@ -362,6 +365,145 @@ def _vis_len(text: str) -> int:
     return len(_ANSI_RE.sub("", text))
 
 
+def _config_file_path() -> Path:
+    override = os.environ.get("SAYLANG_HOME")
+    base = Path(override) if override else (Path.home() / ".saylang")
+    return base / "nana.json"
+
+
+def load_bg_mode() -> str:
+    """Load persisted nana surface background mode (`mica` or `black`)."""
+    import json
+
+    path = _config_file_path()
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            mode = str(data.get("bg_mode", "mica")).strip().lower()
+            if mode in ("mica", "black"):
+                return mode
+        except Exception:
+            pass
+    return "mica"
+
+
+def save_bg_mode(mode: str) -> str:
+    """Persist `mica` or `black` background preference."""
+    import json
+
+    norm = "black" if str(mode).strip().lower() == "black" else "mica"
+    path = _config_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"bg_mode": norm}, indent=2) + "\n", encoding="utf-8")
+    return norm
+
+
+def _clip_ansi(text: str, max_width: int) -> str:
+    """Clip a possibly ANSI-styled line to at most `max_width` visible columns."""
+    if max_width <= 0:
+        return ""
+    out: list[str] = []
+    vis = 0
+    saw_ansi = False
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == "\x1b":
+            m = _ANSI_RE.match(text, i)
+            if m:
+                out.append(m.group(0))
+                saw_ansi = True
+                i = m.end()
+                continue
+        if vis >= max_width:
+            break
+        ch = text[i]
+        if ch in ("\r", "\n"):
+            i += 1
+            continue
+        out.append(ch)
+        vis += 1
+        i += 1
+    if saw_ansi:
+        out.append(_RESET)
+    return "".join(out)
+
+
+def _compose_screen(
+    lines: list[str],
+    rows: int,
+    cols: int,
+    *,
+    cursor: tuple[int, int] | None = None,
+    bg_mode: str = "mica",
+) -> str:
+    """Render an exact `rows x cols` frame with explicit row positioning and Mica/Black surface."""
+    rows = max(rows, 1)
+    cols = max(cols, 1)
+    use_black = str(bg_mode).strip().lower() == "black"
+    parts: list[str] = ["\x1b[?2026h"]
+    for idx in range(rows):
+        raw = lines[idx] if idx < len(lines) else ""
+        clipped = _clip_ansi(raw, cols)
+        if use_black:
+            styled = clipped.replace(_RESET, _BLACK_RESET)
+            pad_n = max(cols - _vis_len(clipped), 0)
+            parts.append(f"\x1b[{idx + 1};1H{_BLACK_BG}{styled}{' ' * pad_n}{_BLACK_BG}\x1b[K")
+        else:
+            parts.append(f"\x1b[{idx + 1};1H{_DEFAULT_BG}{clipped}{_DEFAULT_BG}\x1b[K")
+    if cursor is not None:
+        cr = max(1, min(cursor[0], rows))
+        cc = max(1, min(cursor[1], cols))
+        parts.append(f"\x1b[?25h\x1b[{cr};{cc}H")
+    else:
+        parts.append("\x1b[?25l")
+    parts.append("\x1b[?2026l")
+    return "".join(parts)
+
+
+_SIGWINCH_FLAG = False
+
+
+def _on_sigwinch(_signum: int, _frame: object) -> None:
+    global _SIGWINCH_FLAG
+    _SIGWINCH_FLAG = True
+
+
+def _enter_raw_tty() -> object:
+    """Configure non-canonical keyboard input while preserving POSIX OPOST output."""
+    if sys.platform == "win32":
+        return None
+    import signal
+    import termios
+
+    fd = sys.stdin.fileno()
+    old_attrs = termios.tcgetattr(fd)
+    new_attrs = termios.tcgetattr(fd)
+    new_attrs[0] &= ~(termios.IXON | termios.ICRNL | termios.ISTRIP | termios.INPCK)
+    new_attrs[2] |= termios.CS8
+    new_attrs[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN)
+    new_attrs[6][termios.VMIN] = 0
+    new_attrs[6][termios.VTIME] = 1
+    termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
+    prev_sig = None
+    if hasattr(signal, "SIGWINCH"):
+        prev_sig = signal.signal(signal.SIGWINCH, _on_sigwinch)
+    return (old_attrs, prev_sig)
+
+
+def _leave_raw_tty(saved: object) -> None:
+    """Restore saved terminal attributes and SIGWINCH handler."""
+    if saved is None or sys.platform == "win32":
+        return
+    import signal
+    import termios
+
+    old_attrs, prev_sig = saved  # type: ignore[misc]
+    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_attrs)
+    if prev_sig is not None and hasattr(signal, "SIGWINCH"):
+        signal.signal(signal.SIGWINCH, prev_sig)
+
+
 def highlight_saylang_line(line: str) -> str:
     """Apply SayLang ANSI syntax highlighting to one line, preserving all chars."""
     stripped = line.lstrip(" \t")
@@ -661,11 +803,11 @@ class NanaBuffer:
         self.status = f"Saved {target}"
         return target
 
-    def render_frame(self, rows: int, cols: int) -> str:
-        """Render full terminal frame with syntax highlighting and cursor placement."""
+    def render_frame(self, rows: int, cols: int, *, bg_mode: str = "mica") -> str:
+        """Render full adaptive terminal frame with quiet hairline chrome."""
         rows = max(rows, 8)
-        cols = max(cols, 40)
-        body_rows = rows - 3
+        cols = max(cols, 36)
+        body_rows = rows - 4
         gutter_w = max(len(str(len(self.lines))) + 3, 6)
         code_w = max(cols - gutter_w, 10)
 
@@ -680,13 +822,17 @@ class NanaBuffer:
             self.scroll_x = self.col - code_w + 1
 
         name = str(self.filepath) if self.filepath else "[untitled.pl]"
-        mod_tag = " [modified]" if self.modified else ""
-        left_hdr = f" NANA  {name}{mod_tag}"
-        right_hdr = f"Ln {self.row + 1}, Col {self.col + 1}  Saylang v{__version__} "
-        gap = max(cols - len(left_hdr) - len(right_hdr), 1)
-        header = (left_hdr + " " * gap + right_hdr)[:cols].ljust(cols)
+        mod_tag = " *" if self.modified else ""
+        right_hdr = f"Ln {self.row + 1}, Col {self.col + 1} · v{__version__} "
+        max_left = max(cols - len(right_hdr) - 4, 10)
+        left_plain = f" NANA · {name}{mod_tag}"[:max_left]
+        gap = max(cols - len(left_plain) - len(right_hdr), 1)
+        header = f" {_BOLD}NANA{_RESET} {_GRAY}· {name[:max(max_left - 8, 6)]}{mod_tag}{_RESET}{' ' * gap}{_GRAY}{right_hdr}{_RESET}"
 
-        out: list[str] = ["\x1b[H", f"{_INV}{header}{_RESET}\x1b[K\n"]
+        screen_lines: list[str] = [
+            header,
+            f"{_GRAY}{'─' * cols}{_RESET}",
+        ]
 
         num_w = gutter_w - 3
         for vis_r in range(body_rows):
@@ -696,9 +842,9 @@ class NanaBuffer:
                 sliced = raw_line[self.scroll_x : self.scroll_x + code_w]
                 hl = highlight_saylang_line(sliced)
                 lineno = f"{line_idx + 1:>{num_w}}"
-                out.append(f"{_GRAY}{lineno} │ {_RESET}{hl}\x1b[K\n")
+                screen_lines.append(f"{_GRAY}{lineno} │ {_RESET}{hl}")
             else:
-                out.append(f"{_GRAY}{'~':>{num_w}} │ {_RESET}\x1b[K\n")
+                screen_lines.append(f"{_GRAY}{'~':>{num_w}} │ {_RESET}")
 
         ok, syn_msg = self.check_syntax()
         syn_badge = (
@@ -707,19 +853,21 @@ class NanaBuffer:
             else f"\x1b[91m✗ {syn_msg}{_RESET}"
         )
         extra = f"  │  {self.status}" if self.status else ""
-        status_line = f" {syn_badge}{extra}"
-        out.append(f"{status_line}\x1b[K\n")
+        screen_lines.append(f" {syn_badge}{extra}")
 
         footer = " ^S Save   ^R Run   ^P Menu   ^K Cut   ^U Paste   ^G Help   ^X Exit "
-        out.append(f"{_INV}{footer[:cols].ljust(cols)}{_RESET}\x1b[K")
+        screen_lines.append(f"{_DIM}{footer[:cols]}{_RESET}")
 
-        cur_r = (self.row - self.scroll_y) + 2
+        cur_r = (self.row - self.scroll_y) + 3
         cur_c = gutter_w + (self.col - self.scroll_x) + 1
-        out.append(f"\x1b[{cur_r};{cur_c}H")
-        return "".join(out)
+        return _compose_screen(
+            screen_lines, rows, cols, cursor=(cur_r, cur_c), bg_mode=bg_mode
+        )
 
 
-def _welcome_items(has_active_buffer: bool) -> list[tuple[str, str, str]]:
+def _welcome_items(
+    has_active_buffer: bool, bg_mode: str = "mica"
+) -> list[tuple[str, str, str]]:
     items: list[tuple[str, str, str]] = []
     if has_active_buffer:
         items.append(("resume", "Resume Editor", "Return to your open SayLang buffer"))
@@ -732,9 +880,11 @@ def _welcome_items(has_active_buffer: bool) -> list[tuple[str, str, str]]:
     )
     if has_active_buffer:
         items.append(("run_flags", "Run with Flags", "Run current buffer with CLI flags (e.g. -d)"))
+    bg_label = "Mica (Transparent)" if bg_mode == "mica" else "Black (#000000)"
     items.extend(
         [
             ("learn", "Learn SayLang", "Interactive freeCodeCamp-style TUI course"),
+            ("bg", f"Surface: {bg_label}", "Switch transparent Mica vs pure Black [t]"),
             ("cheat", "SayLang Cheat Sheet", "Syntax, colours, pipes & stdlib reference"),
             ("quit", "Quit", "Exit nana"),
         ]
@@ -747,111 +897,151 @@ def render_welcome_menu(
     rows: int,
     cols: int,
     has_active_buffer: bool = False,
+    bg_mode: str = "mica",
 ) -> str:
-    """Render the monochrome B&W `nana` welcome/launcher TUI screen."""
-    rows = max(rows, 14)
-    cols = max(cols, 44)
-    items = _welcome_items(has_active_buffer)
+    """Render adaptive minimal B&W `nana` welcome/launcher TUI (Mica or Black surface)."""
+    rows = max(rows, 10)
+    cols = max(cols, 36)
+    items = _welcome_items(has_active_buffer, bg_mode=bg_mode)
     sel = max(0, min(selected, len(items) - 1))
 
-    header = f" NANA · Saylang Studio v{__version__} "
-    header_bar = f"{_INV}{header[:cols].ljust(cols)}{_RESET}"
-    footer = " ↑/↓ Move   Enter Select   1-9 Quick Pick   Esc/q Quit "
-    footer_bar = f"{_INV}{footer[:cols].ljust(cols)}{_RESET}"
+    bg_tag = "mica" if bg_mode == "mica" else "black"
+    right_top = f"Saylang v{__version__} · {bg_tag} "
+    gap_top = max(cols - 16 - len(right_top), 1)
+    header_bar = f" {_BOLD}NANA{_RESET} {_GRAY}· studio{_RESET}{' ' * gap_top}{_GRAY}{right_top}{_RESET}"
+    hairline = f"{_GRAY}{'─' * cols}{_RESET}"
+    footer_bar = f" {_DIM}↑/↓ Move   Enter Select   1-9 Quick Pick   t Surface   Esc/q Quit{_RESET}"
 
-    card = [
-        f"  {_BOLD}╭─────────────╮{_RESET}   {_BOLD}NANA{_RESET}  {_DIM}Saylang v{__version__}{_RESET}",
-        f"  {_BOLD}│ ╭─╮ ╭─╮ ╷ ╷ │{_RESET}   {_DIM}plain-english editor · .pl{_RESET}",
-        f"  {_BOLD}│ ╰─╮ ├─┤ ╰┬╯ │{_RESET}   {_DIM}live syntax highlighting & runner{_RESET}",
-        f"  {_BOLD}│ ╰─╯ ╵ ╵  ╵  │{_RESET}",
-        f"  {_BOLD}╰─────────────╯{_RESET}",
-    ]
+    panel_w = min(cols - 4, 74) if cols >= 56 else cols - 2
+    left_margin = " " * max((cols - panel_w) // 2, 1)
 
-    lines: list[str] = [header_bar, ""]
-    lines.extend(card)
-    lines.append("")
+    content: list[str] = []
+    if rows >= 18:
+        if rows >= 22:
+            content.append("")
+        card = [
+            f"{_BOLD}╭─────────────╮{_RESET}   {_BOLD}NANA{_RESET}  {_GRAY}Saylang v{__version__}{_RESET}",
+            f"{_BOLD}│ ╭─╮ ╭─╮ ╷ ╷ │{_RESET}   {_GRAY}plain-english editor · .pl{_RESET}",
+            f"{_BOLD}│ ╰─╮ ├─┤ ╰┬╯ │{_RESET}   {_GRAY}adaptive tui · {bg_tag} surface{_RESET}",
+            f"{_BOLD}│ ╰─╯ ╵ ╵  ╵  │{_RESET}",
+            f"{_BOLD}╰─────────────╯{_RESET}",
+        ]
+        for c_ln in card:
+            content.append(f"{left_margin}{c_ln}")
+        content.append("")
+    else:
+        content.append(f"{left_margin}{_BOLD}NANA · Saylang v{__version__}{_RESET}")
+        content.append("")
 
-    for idx, (_key, title, desc) in enumerate(items):
+    avail_rows = max(rows - 4 - len(content), 3)
+    scroll = 0
+    if sel >= avail_rows:
+        scroll = sel - avail_rows + 1
+
+    title_w = min(28, max(panel_w - 8, 12))
+    show_desc = panel_w >= 54
+    for idx in range(scroll, min(len(items), scroll + avail_rows)):
+        _key, title, desc = items[idx]
         num = idx + 1
-        raw_label = f"  {num}. {title:<21} {desc}"
-        clipped = raw_label[: max(cols - 4, 20)]
-        if idx == sel:
-            row_str = f"  {_INV} ▸ {clipped.strip().ljust(max(cols - 8, 18))} {_RESET}"
+        t_txt = title[:title_w].ljust(title_w)
+        if show_desc:
+            d_w = max(panel_w - title_w - 8, 8)
+            d_txt = desc[:d_w]
         else:
-            row_str = f"    {_BOLD}{num}. {title:<21}{_RESET} {_DIM}{desc}{_RESET}"
-        lines.append(row_str)
+            d_txt = ""
+        if idx == sel:
+            if d_txt:
+                content.append(
+                    f"{left_margin}{_BRIGHT_WHITE}▌ {num}. {t_txt}{_RESET} \x1b[37m{d_txt}{_RESET}"
+                )
+            else:
+                content.append(f"{left_margin}{_BRIGHT_WHITE}▌ {num}. {title[:max(panel_w - 6, 8)]}{_RESET}")
+        else:
+            if d_txt:
+                content.append(
+                    f"{left_margin}  {_GRAY}{num}.{_RESET} \x1b[37m{t_txt}{_RESET} {_GRAY}{d_txt}{_RESET}"
+                )
+            else:
+                content.append(f"{left_margin}  {_GRAY}{num}.{_RESET} \x1b[37m{title[:max(panel_w - 6, 8)]}{_RESET}")
 
-    body_target = rows - 1
+    body_target = rows - 2
+    lines: list[str] = [header_bar, hairline, *content]
     while len(lines) < body_target:
         lines.append("")
     lines = lines[:body_target]
+    lines.append(hairline)
     lines.append(footer_bar)
-
-    frame = "\x1b[H\x1b[?25l" + "\n".join(f"{ln}\x1b[K" for ln in lines)
-    return frame
+    return _compose_screen(lines, rows, cols, bg_mode=bg_mode)
 
 
-def render_template_picker(selected: int, rows: int, cols: int) -> str:
-    """Render the template selector with live syntax-highlighted preview."""
-    rows = max(rows, 14)
-    cols = max(cols, 44)
+def render_template_picker(
+    selected: int, rows: int, cols: int, bg_mode: str = "mica"
+) -> str:
+    """Render adaptive template selector with live syntax-highlighted preview."""
+    rows = max(rows, 10)
+    cols = max(cols, 36)
     sel = max(0, min(selected, len(NANA_TEMPLATES) - 1))
     tpl = NANA_TEMPLATES[sel]
 
-    header = " NANA · Start from Template "
-    header_bar = f"{_INV}{header[:cols].ljust(cols)}{_RESET}"
-    footer = " ↑/↓ Choose Template   Enter Open in Editor   Esc Back "
-    footer_bar = f"{_INV}{footer[:cols].ljust(cols)}{_RESET}"
+    header_bar = f" {_BOLD}NANA{_RESET} {_GRAY}· Start from Template{_RESET}"
+    hairline = f"{_GRAY}{'─' * cols}{_RESET}"
+    footer_bar = f" {_DIM}↑/↓ Choose Template   Enter Open in Editor   t Surface   Esc Back{_RESET}"
 
-    body_rows = rows - 2
+    body_rows = rows - 4
     preview_lines = tpl.code.rstrip("\n").split("\n")
 
     if cols >= 72:
-        left_w = min(34, cols // 2 - 2)
-        right_w = max(cols - left_w - 4, 20)
-        out_rows: list[str] = [header_bar]
+        left_w = max(26, min(40, cols * 36 // 100))
+        right_w = max(cols - left_w - 2, 20)
+        cap = max(body_rows - 5, 3)
+        scroll = max(0, sel - cap + 1)
 
         left_col: list[str] = ["", f" {_BOLD}Templates{_RESET}", ""]
-        for idx, item in enumerate(NANA_TEMPLATES):
-            label = f"{idx + 1}. {item.title}"[: max(left_w - 4, 10)]
+        for idx in range(scroll, min(len(NANA_TEMPLATES), scroll + cap)):
+            item = NANA_TEMPLATES[idx]
+            label = f"{idx + 1}. {item.title}"[: max(left_w - 5, 10)]
             if idx == sel:
-                left_col.append(f" {_INV} ▸ {label.ljust(max(left_w - 5, 10))} {_RESET}")
+                left_col.append(f" {_BRIGHT_WHITE}▌ {label}{_RESET}")
             else:
-                left_col.append(f"   {label}")
-        left_col.extend(["", f" {_DIM}{tpl.description[:left_w - 2]}{_RESET}"])
+                left_col.append(f"   \x1b[37m{label}{_RESET}")
+        left_col.extend(["", f" {_GRAY}{tpl.description[:max(left_w - 2, 10)]}{_RESET}"])
 
         right_col: list[str] = [
             "",
             f" {_BOLD}Preview: {tpl.filename}{_RESET}",
-            f" {_DIM}{'─' * min(right_w - 2, 42)}{_RESET}",
+            f" {_GRAY}{'─' * min(right_w - 2, 46)}{_RESET}",
         ]
         for pline in preview_lines:
             right_col.append(" " + highlight_saylang_line(pline[: max(right_w - 2, 8)]))
 
+        screen_lines: list[str] = [header_bar, hairline]
         for r in range(body_rows):
-            l_txt = left_col[r] if r < len(left_col) else ""
-            r_txt = right_col[r] if r < len(right_col) else ""
+            l_txt = _clip_ansi(left_col[r], left_w) if r < len(left_col) else ""
+            r_txt = _clip_ansi(right_col[r], right_w) if r < len(right_col) else ""
             pad = " " * max(left_w - _vis_len(l_txt), 0)
-            out_rows.append(f"{l_txt}{pad}{_GRAY}│{_RESET}{r_txt}")
-        out_rows.append(footer_bar)
-        return "\x1b[H\x1b[?25l" + "\n".join(f"{ln}\x1b[K" for ln in out_rows)
+            screen_lines.append(f"{l_txt}{pad}{_GRAY}│{_RESET}{r_txt}")
+        screen_lines.extend([hairline, footer_bar])
+        return _compose_screen(screen_lines, rows, cols, bg_mode=bg_mode)
 
-    # Narrow stacked view
-    out_narrow: list[str] = [header_bar, ""]
-    for idx, item in enumerate(NANA_TEMPLATES):
-        label = f"{idx + 1}. {item.title}"
+    out_narrow: list[str] = [header_bar, hairline]
+    list_cap = max(min(len(NANA_TEMPLATES), body_rows // 2), 2)
+    scroll = max(0, sel - list_cap + 1)
+    for idx in range(scroll, min(len(NANA_TEMPLATES), scroll + list_cap)):
+        item = NANA_TEMPLATES[idx]
+        label = f"{idx + 1}. {item.title}"[: max(cols - 6, 10)]
         if idx == sel:
-            out_narrow.append(f" {_INV} ▸ {label} {_RESET}")
+            out_narrow.append(f" {_BRIGHT_WHITE}▌ {label}{_RESET}")
         else:
-            out_narrow.append(f"   {label}")
-    out_narrow.extend(["", f" {_BOLD}Preview ({tpl.filename}):{_RESET}"])
-    for pline in preview_lines[: max(body_rows - len(out_narrow), 2)]:
-        out_narrow.append(" " + highlight_saylang_line(pline[: max(cols - 2, 10)]))
-    while len(out_narrow) < rows - 1:
+            out_narrow.append(f"   \x1b[37m{label}{_RESET}")
+    if len(out_narrow) + 3 < rows - 2:
+        out_narrow.extend(["", f" {_BOLD}Preview ({tpl.filename}):{_RESET}"])
+        for pline in preview_lines[: max(rows - 2 - len(out_narrow), 1)]:
+            out_narrow.append(" " + highlight_saylang_line(pline[: max(cols - 2, 10)]))
+    while len(out_narrow) < rows - 2:
         out_narrow.append("")
-    out_narrow = out_narrow[: rows - 1]
-    out_narrow.append(footer_bar)
-    return "\x1b[H\x1b[?25l" + "\n".join(f"{ln}\x1b[K" for ln in out_narrow)
+    out_narrow = out_narrow[: rows - 2]
+    out_narrow.extend([hairline, footer_bar])
+    return _compose_screen(out_narrow, rows, cols, bg_mode=bg_mode)
 
 
 def render_file_picker(
@@ -860,20 +1050,20 @@ def render_file_picker(
     rows: int,
     cols: int,
     root: Path | None = None,
+    bg_mode: str = "mica",
 ) -> str:
-    """Render `.pl` file browser with live syntax-highlighted preview."""
-    rows = max(rows, 14)
-    cols = max(cols, 44)
+    """Render adaptive `.pl` file browser with live syntax-highlighted preview."""
+    rows = max(rows, 10)
+    cols = max(cols, 36)
     base = (root or Path.cwd()).resolve()
-    total = len(files) + 1  # last entry = custom path
+    total = len(files) + 1
     sel = max(0, min(selected, total - 1))
 
-    header = f" NANA · Open .pl File ({base.name}) "
-    header_bar = f"{_INV}{header[:cols].ljust(cols)}{_RESET}"
-    footer = " ↑/↓ Select   Enter Open   / Type Path   Esc Back "
-    footer_bar = f"{_INV}{footer[:cols].ljust(cols)}{_RESET}"
+    header_bar = f" {_BOLD}NANA{_RESET} {_GRAY}· Open .pl File ({base.name}){_RESET}"
+    hairline = f"{_GRAY}{'─' * cols}{_RESET}"
+    footer_bar = f" {_DIM}↑/↓ Select   Enter Open   / Type Path   t Surface   Esc Back{_RESET}"
 
-    body_rows = rows - 2
+    body_rows = rows - 4
     labels: list[str] = []
     for p in files:
         try:
@@ -889,105 +1079,135 @@ def render_file_picker(
         preview_title = labels[sel]
         try:
             preview_lines = (
-                chosen.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")[:25]
+                chosen.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")[: max(body_rows, 25)]
             )
         except OSError as exc:
             preview_lines = [f"(Cannot read file: {exc})"]
 
-    left_w = min(36, cols // 2 - 2) if cols >= 72 else cols
-    list_rows_cap = max(body_rows - 4, 4)
-    scroll = max(0, sel - list_rows_cap + 1)
+    list_cap = max(body_rows - 4, 3)
+    scroll = max(0, sel - list_cap + 1)
 
     if cols >= 72:
-        right_w = max(cols - left_w - 4, 20)
+        left_w = max(26, min(40, cols * 36 // 100))
+        right_w = max(cols - left_w - 2, 20)
         left_col: list[str] = ["", f" {_BOLD}.pl Files{_RESET}", ""]
-        for idx in range(scroll, min(len(labels), scroll + list_rows_cap)):
+        for idx in range(scroll, min(len(labels), scroll + list_cap)):
             lbl = labels[idx][: max(left_w - 5, 8)]
             if idx == sel:
-                left_col.append(f" {_INV} ▸ {lbl.ljust(max(left_w - 5, 8))} {_RESET}")
+                left_col.append(f" {_BRIGHT_WHITE}▌ {lbl}{_RESET}")
             else:
-                left_col.append(f"   {lbl}")
+                left_col.append(f"   \x1b[37m{lbl}{_RESET}")
 
         right_col: list[str] = [
             "",
             f" {_BOLD}Preview: {preview_title}{_RESET}",
-            f" {_DIM}{'─' * min(right_w - 2, 42)}{_RESET}",
+            f" {_GRAY}{'─' * min(right_w - 2, 46)}{_RESET}",
         ]
         for pline in preview_lines:
             right_col.append(" " + highlight_saylang_line(pline[: max(right_w - 2, 8)]))
 
-        out_rows = [header_bar]
+        screen_lines = [header_bar, hairline]
         for r in range(body_rows):
-            l_txt = left_col[r] if r < len(left_col) else ""
-            r_txt = right_col[r] if r < len(right_col) else ""
+            l_txt = _clip_ansi(left_col[r], left_w) if r < len(left_col) else ""
+            r_txt = _clip_ansi(right_col[r], right_w) if r < len(right_col) else ""
             pad = " " * max(left_w - _vis_len(l_txt), 0)
-            out_rows.append(f"{l_txt}{pad}{_GRAY}│{_RESET}{r_txt}")
-        out_rows.append(footer_bar)
-        return "\x1b[H\x1b[?25l" + "\n".join(f"{ln}\x1b[K" for ln in out_rows)
+            screen_lines.append(f"{l_txt}{pad}{_GRAY}│{_RESET}{r_txt}")
+        screen_lines.extend([hairline, footer_bar])
+        return _compose_screen(screen_lines, rows, cols, bg_mode=bg_mode)
 
-    out_narrow = [header_bar, ""]
-    for idx in range(scroll, min(len(labels), scroll + list_rows_cap)):
+    out_narrow = [header_bar, hairline]
+    for idx in range(scroll, min(len(labels), scroll + list_cap)):
         lbl = labels[idx][: max(cols - 6, 10)]
         if idx == sel:
-            out_narrow.append(f" {_INV} ▸ {lbl} {_RESET}")
+            out_narrow.append(f" {_BRIGHT_WHITE}▌ {lbl}{_RESET}")
         else:
-            out_narrow.append(f"   {lbl}")
-    while len(out_narrow) < rows - 1:
+            out_narrow.append(f"   \x1b[37m{lbl}{_RESET}")
+    while len(out_narrow) < rows - 2:
         out_narrow.append("")
-    out_narrow = out_narrow[: rows - 1]
-    out_narrow.append(footer_bar)
-    return "\x1b[H\x1b[?25l" + "\n".join(f"{ln}\x1b[K" for ln in out_narrow)
+    out_narrow = out_narrow[: rows - 2]
+    out_narrow.extend([hairline, footer_bar])
+    return _compose_screen(out_narrow, rows, cols, bg_mode=bg_mode)
 
 
 def _read_key() -> str:
-    """Read a single logical keypress across POSIX and Windows terminals."""
+    """Read a single logical keypress or 'RESIZE' across POSIX and Windows terminals."""
+    global _SIGWINCH_FLAG
+    last_size = shutil.get_terminal_size((80, 24))
+
     if sys.platform == "win32":
         import msvcrt
+        import time
 
-        ch = msvcrt.getwch()
-        if ch in ("\x00", "\xe0"):
-            code = msvcrt.getwch()
-            return {
-                "H": "UP",
-                "P": "DOWN",
-                "K": "LEFT",
-                "M": "RIGHT",
-                "G": "HOME",
-                "O": "END",
-                "S": "DELETE",
-            }.get(code, "")
-        return ch
+        while True:
+            cur_size = shutil.get_terminal_size((80, 24))
+            if cur_size != last_size:
+                return "RESIZE"
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch()
+                if ch in ("\x00", "\xe0"):
+                    code = msvcrt.getwch()
+                    return {
+                        "H": "UP",
+                        "P": "DOWN",
+                        "K": "LEFT",
+                        "M": "RIGHT",
+                        "G": "HOME",
+                        "O": "END",
+                        "S": "DELETE",
+                    }.get(code, "")
+                return ch
+            time.sleep(0.05)
 
     import select
 
-    ch = sys.stdin.read(1)
-    if ch == "\x1b":
-        if select.select([sys.stdin], [], [], 0.03)[0]:
-            nxt = sys.stdin.read(1)
-            if nxt == "[":
-                seq = ""
-                while select.select([sys.stdin], [], [], 0.03)[0]:
-                    c = sys.stdin.read(1)
-                    seq += c
-                    if c.isalpha() or c == "~":
-                        break
-                return {
-                    "A": "UP",
-                    "B": "DOWN",
-                    "C": "RIGHT",
-                    "D": "LEFT",
-                    "H": "HOME",
-                    "F": "END",
-                    "1~": "HOME",
-                    "4~": "END",
-                    "3~": "DELETE",
-                }.get(seq, "")
-        return "ESC"
-    return ch
+    while True:
+        if _SIGWINCH_FLAG:
+            _SIGWINCH_FLAG = False
+            return "RESIZE"
+        cur_size = shutil.get_terminal_size((80, 24))
+        if cur_size != last_size:
+            return "RESIZE"
+        try:
+            ready, _, _ = select.select([sys.stdin], [], [], 0.12)
+        except InterruptedError:
+            _SIGWINCH_FLAG = False
+            return "RESIZE"
+        if not ready:
+            continue
+        ch = sys.stdin.read(1)
+        if not ch:
+            continue
+        if ch == "\x1b":
+            if select.select([sys.stdin], [], [], 0.03)[0]:
+                nxt = sys.stdin.read(1)
+                if nxt == "[":
+                    seq = ""
+                    while select.select([sys.stdin], [], [], 0.03)[0]:
+                        c = sys.stdin.read(1)
+                        seq += c
+                        if c.isalpha() or c == "~":
+                            break
+                    return {
+                        "A": "UP",
+                        "B": "DOWN",
+                        "C": "RIGHT",
+                        "D": "LEFT",
+                        "H": "HOME",
+                        "F": "END",
+                        "1~": "HOME",
+                        "4~": "END",
+                        "3~": "DELETE",
+                    }.get(seq, "")
+            return "ESC"
+        return ch
 
 
 def _prompt_bar(
-    label: str, default: str = "", *, buf: NanaBuffer | None = None
+    label: str,
+    default: str = "",
+    *,
+    buf: NanaBuffer | None = None,
+    bg_mode: str = "mica",
 ) -> str | None:
     """Inline single-line prompt on the bottom status line."""
     val = default
@@ -995,15 +1215,20 @@ def _prompt_bar(
         cols, rows = shutil.get_terminal_size((80, 24))
         if buf is not None:
             buf.status = ""
-            sys.stdout.write(buf.render_frame(rows, cols))
+            sys.stdout.write(buf.render_frame(rows, cols, bg_mode=bg_mode))
         prompt_row = rows - 1 if buf is not None else rows
-        prompt_col = min(len(label) + len(val) + 2, cols)
+        raw_prompt = f" ▸ {label}{val}"
+        clipped = _clip_ansi(raw_prompt, cols)
+        prompt_col = min(_vis_len(clipped) + 1, cols)
+        bg = _BLACK_BG if bg_mode == "black" else _DEFAULT_BG
         sys.stdout.write(
-            f"\x1b[{prompt_row};1H\x1b[?25h{_INV} {label}{val} {_RESET}\x1b[K"
-            f"\x1b[{prompt_row};{prompt_col + 1}H"
+            f"\x1b[{prompt_row};1H{bg}{_BRIGHT_WHITE}{clipped.ljust(cols)}{_RESET}{bg}\x1b[K"
+            f"\x1b[?25h\x1b[{prompt_row};{prompt_col}H"
         )
         sys.stdout.flush()
         key = _read_key()
+        if key == "RESIZE":
+            continue
         if key in ("\r", "\n"):
             return val.strip()
         if key in ("ESC", "\x03"):
@@ -1014,38 +1239,69 @@ def _prompt_bar(
             val += key
 
 
-def _show_overlay(title: str, body: str) -> None:
-    """Display output or help overlay inside the alternate screen."""
-    cols, rows = shutil.get_terminal_size((80, 24))
-    sys.stdout.write("\x1b[H\x1b[2J\x1b[?25l")
-    sys.stdout.write(f"{_INV} {title.ljust(max(cols - 1, 1))}{_RESET}\n\n")
+def _show_overlay(title: str, body: str, *, bg_mode: str = "mica") -> None:
+    """Display scrollable adaptive overlay inside the alternate screen."""
     lines = body.splitlines() or ["(no output)"]
-    for line in lines[: max(rows - 5, 1)]:
-        sys.stdout.write(line + "\n")
-    sys.stdout.write(
-        f"\n\x1b[{rows};1H{_INV} Press any key to return to nana... {_RESET}"
-    )
-    sys.stdout.flush()
-    _read_key()
+    scroll = 0
+    while True:
+        cols, rows = shutil.get_terminal_size((80, 24))
+        body_cap = max(rows - 5, 1)
+        max_scroll = max(len(lines) - body_cap, 0)
+        scroll = max(0, min(scroll, max_scroll))
+
+        hairline = f"{_GRAY}{'─' * cols}{_RESET}"
+        screen: list[str] = [
+            f" {_BOLD}{title[:max(cols - 2, 1)]}{_RESET}",
+            hairline,
+        ]
+        for ln in lines[scroll : scroll + body_cap]:
+            screen.append(" " + ln)
+        while len(screen) < rows - 2:
+            screen.append("")
+        hint = (
+            " ↑/↓ Scroll   Any other key to return... "
+            if max_scroll > 0
+            else " Press any key to return... "
+        )
+        screen.extend([hairline, f" {_DIM}{hint}{_RESET}"])
+        sys.stdout.write(_compose_screen(screen, rows, cols, bg_mode=bg_mode))
+        sys.stdout.flush()
+        k = _read_key()
+        if k == "RESIZE":
+            continue
+        if k == "UP" and max_scroll > 0:
+            scroll = max(scroll - 1, 0)
+            continue
+        if k == "DOWN" and max_scroll > 0:
+            scroll = min(scroll + 1, max_scroll)
+            continue
+        return
 
 
-def _run_buffer(buf: NanaBuffer, cli_args: list[str] | None = None) -> None:
+def _run_buffer(
+    buf: NanaBuffer, cli_args: list[str] | None = None, *, bg_mode: str = "mica"
+) -> None:
     out_buf = io.StringIO()
     try:
         run_source(buf.text, stdout=out_buf, cli_args=cli_args)
         output = out_buf.getvalue() or "(finished with no output)"
     except SayError as err:
         output = err.format_pretty(str(buf.filepath) if buf.filepath else "<nana>")
-    _show_overlay("Run Output (SayLang)", output)
+    _show_overlay("Run Output (SayLang)", output, bg_mode=bg_mode)
 
 
-def _select_template_tui() -> NanaBuffer | None:
+def _select_template_tui(bg_state: list[str]) -> NanaBuffer | None:
     sel = 0
     while True:
         cols, rows = shutil.get_terminal_size((80, 24))
-        sys.stdout.write(render_template_picker(sel, rows, cols))
+        sys.stdout.write(render_template_picker(sel, rows, cols, bg_mode=bg_state[0]))
         sys.stdout.flush()
         key = _read_key()
+        if key == "RESIZE":
+            continue
+        if key == "t":
+            bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
+            continue
         if key == "UP":
             sel = (sel - 1) % len(NANA_TEMPLATES)
         elif key == "DOWN":
@@ -1058,46 +1314,66 @@ def _select_template_tui() -> NanaBuffer | None:
             return None
 
 
-def _select_file_tui() -> NanaBuffer | None:
+def _select_file_tui(bg_state: list[str]) -> NanaBuffer | None:
     root = Path.cwd().resolve()
     files = discover_pl_files(root)
     sel = 0
     total = len(files) + 1
     while True:
         cols, rows = shutil.get_terminal_size((80, 24))
-        sys.stdout.write(render_file_picker(files, sel, rows, cols, root))
+        sys.stdout.write(
+            render_file_picker(files, sel, rows, cols, root, bg_mode=bg_state[0])
+        )
         sys.stdout.flush()
         key = _read_key()
+        if key == "RESIZE":
+            continue
+        if key == "t":
+            bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
+            continue
         if key == "UP":
             sel = (sel - 1) % total
         elif key == "DOWN":
             sel = (sel + 1) % total
         elif key == "/":
-            custom = _prompt_bar("Open file path: ")
+            custom = _prompt_bar("Open file path: ", bg_mode=bg_state[0])
             if custom:
                 return NanaBuffer.from_file(custom)
         elif key in ("\r", "\n"):
             if sel < len(files):
                 return NanaBuffer.from_file(str(files[sel]))
-            custom = _prompt_bar("Open file path: ")
+            custom = _prompt_bar("Open file path: ", bg_mode=bg_state[0])
             if custom:
                 return NanaBuffer.from_file(custom)
         elif key in ("ESC", "q", "\x03"):
             return None
 
 
-def _run_menu_tui(active_buf: NanaBuffer | None) -> tuple[str, NanaBuffer | None]:
+def _run_menu_tui(
+    active_buf: NanaBuffer | None, bg_state: list[str]
+) -> tuple[str, NanaBuffer | None]:
     """Show the main nana launcher/menu TUI. Returns ('edit', buf) or ('quit', None)."""
     sel = 0
     while True:
-        items = _welcome_items(active_buf is not None)
+        items = _welcome_items(active_buf is not None, bg_mode=bg_state[0])
         sel = max(0, min(sel, len(items) - 1))
         cols, rows = shutil.get_terminal_size((80, 24))
         sys.stdout.write(
-            render_welcome_menu(sel, rows, cols, has_active_buffer=active_buf is not None)
+            render_welcome_menu(
+                sel,
+                rows,
+                cols,
+                has_active_buffer=active_buf is not None,
+                bg_mode=bg_state[0],
+            )
         )
         sys.stdout.flush()
         key = _read_key()
+        if key == "RESIZE":
+            continue
+        if key == "t":
+            bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
+            continue
 
         chosen_action: str | None = None
         if key == "UP":
@@ -1116,42 +1392,52 @@ def _run_menu_tui(active_buf: NanaBuffer | None) -> tuple[str, NanaBuffer | None
         if chosen_action == "resume" and active_buf is not None:
             return ("edit", active_buf)
         if chosen_action == "new":
-            fname = _prompt_bar("New file name (Enter for untitled): ")
+            fname = _prompt_bar(
+                "New file name (Enter for untitled): ", bg_mode=bg_state[0]
+            )
             if fname is None:
                 continue
             buf = NanaBuffer(lines=[""], filepath=Path(fname) if fname else None)
             return ("edit", buf)
         if chosen_action == "template":
-            buf = _select_template_tui()
+            buf = _select_template_tui(bg_state)
             if buf is not None:
                 return ("edit", buf)
         if chosen_action == "open":
-            buf = _select_file_tui()
+            buf = _select_file_tui(bg_state)
             if buf is not None:
                 return ("edit", buf)
         if chosen_action == "run_flags" and active_buf is not None:
-            raw_flags = _prompt_bar("Flags (e.g. -d): ")
+            raw_flags = _prompt_bar("Flags (e.g. -d): ", bg_mode=bg_state[0])
             if raw_flags is not None:
                 try:
                     parsed_flags = shlex.split(raw_flags)
                 except ValueError:
                     parsed_flags = raw_flags.split()
-                _run_buffer(active_buf, cli_args=parsed_flags)
+                _run_buffer(active_buf, cli_args=parsed_flags, bg_mode=bg_state[0])
                 return ("edit", active_buf)
         if chosen_action == "learn":
             from saylang.learn import run_learn
 
-            run_learn()
+            run_learn(bg=bg_state[0], _managed_tty=True)
+            bg_state[0] = load_bg_mode()
+        if chosen_action == "bg":
+            bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
         if chosen_action == "cheat":
-            _show_overlay("SayLang Cheat Sheet", _CHEAT_SHEET)
+            _show_overlay("SayLang Cheat Sheet", _CHEAT_SHEET, bg_mode=bg_state[0])
         if chosen_action == "quit":
             if active_buf is not None and active_buf.modified:
-                ans = _prompt_bar("Unsaved changes — save before quit? (y/n/c): ")
+                ans = _prompt_bar(
+                    "Unsaved changes — save before quit? (y/n/c): ",
+                    bg_mode=bg_state[0],
+                )
                 if ans is None or ans.lower().startswith("c"):
                     continue
                 if ans.lower().startswith("y"):
                     if active_buf.filepath is None:
-                        fname = _prompt_bar("Save as: ", "untitled.pl")
+                        fname = _prompt_bar(
+                            "Save as: ", "untitled.pl", bg_mode=bg_state[0]
+                        )
                         if not fname:
                             continue
                         active_buf.save(Path(fname))
@@ -1160,43 +1446,38 @@ def _run_menu_tui(active_buf: NanaBuffer | None) -> tuple[str, NanaBuffer | None
             return ("quit", None)
 
 
-def run_nana(filepath: str | None = None) -> int:
+def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
     """Launch the interactive `nana` SayLang TUI studio & editor."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("nana requires an interactive terminal.", file=sys.stderr)
         return 1
 
     runtime._enable_windows_ansi()
+    bg_state = [save_bg_mode(bg) if bg else load_bg_mode()]
     buf: NanaBuffer | None = NanaBuffer.from_file(filepath) if filepath else None
-
-    old_attrs = None
-    if sys.platform != "win32":
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        old_attrs = termios.tcgetattr(fd)
-        tty.setraw(fd)
+    saved_tty = _enter_raw_tty()
 
     try:
         sys.stdout.write("\x1b[?1049h\x1b[?25h")
         sys.stdout.flush()
 
         if buf is None:
-            action, buf = _run_menu_tui(None)
+            action, buf = _run_menu_tui(None, bg_state)
             if action == "quit" or buf is None:
                 return 0
 
         while True:
             cols, rows = shutil.get_terminal_size((80, 24))
-            sys.stdout.write("\x1b[?25h" + buf.render_frame(rows, cols))
+            sys.stdout.write(buf.render_frame(rows, cols, bg_mode=bg_state[0]))
             sys.stdout.flush()
 
             key = _read_key()
+            if key == "RESIZE":
+                continue
             buf.status = ""
 
             if key == "\x10":  # Ctrl+P -> TUI Menu
-                action, next_buf = _run_menu_tui(buf)
+                action, next_buf = _run_menu_tui(buf, bg_state)
                 if action == "quit":
                     return 0
                 if next_buf is not None:
@@ -1205,12 +1486,21 @@ def run_nana(filepath: str | None = None) -> int:
 
             if key in ("\x18", "\x11"):  # Ctrl+X or Ctrl+Q
                 if buf.modified:
-                    ans = _prompt_bar("Save modified buffer? (y/n/c): ", buf=buf)
+                    ans = _prompt_bar(
+                        "Save modified buffer? (y/n/c): ",
+                        buf=buf,
+                        bg_mode=bg_state[0],
+                    )
                     if ans is None or ans.lower().startswith("c"):
                         continue
                     if ans.lower().startswith("y"):
                         if buf.filepath is None:
-                            fname = _prompt_bar("File name to save: ", "untitled.pl", buf=buf)
+                            fname = _prompt_bar(
+                                "File name to save: ",
+                                "untitled.pl",
+                                buf=buf,
+                                bg_mode=bg_state[0],
+                            )
                             if not fname:
                                 continue
                             buf.save(Path(fname))
@@ -1220,7 +1510,9 @@ def run_nana(filepath: str | None = None) -> int:
 
             if key in ("\x13", "\x0f"):  # Ctrl+S or Ctrl+O
                 if buf.filepath is None:
-                    fname = _prompt_bar("Save as: ", "untitled.pl", buf=buf)
+                    fname = _prompt_bar(
+                        "Save as: ", "untitled.pl", buf=buf, bg_mode=bg_state[0]
+                    )
                     if fname:
                         buf.save(Path(fname))
                 else:
@@ -1228,11 +1520,11 @@ def run_nana(filepath: str | None = None) -> int:
                 continue
 
             if key == "\x12":  # Ctrl+R Run
-                _run_buffer(buf)
+                _run_buffer(buf, bg_mode=bg_state[0])
                 continue
 
             if key == "\x07":  # Ctrl+G Help
-                _show_overlay("SayLang & nana Help", _CHEAT_SHEET)
+                _show_overlay("SayLang & nana Help", _CHEAT_SHEET, bg_mode=bg_state[0])
                 continue
 
             if key == "\x0b":  # Ctrl+K
@@ -1268,7 +1560,4 @@ def run_nana(filepath: str | None = None) -> int:
     finally:
         sys.stdout.write("\x1b[?1049l\x1b[?25h\x1b[0m")
         sys.stdout.flush()
-        if old_attrs is not None:
-            import termios
-
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_attrs)
+        _leave_raw_tty(saved_tty)

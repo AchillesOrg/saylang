@@ -16,17 +16,23 @@ from saylang.errors import SayError
 from saylang.interpreter import run_and_capture
 from saylang.nana import (
     NanaBuffer,
+    _clip_ansi,
+    _compose_screen,
+    _enter_raw_tty,
+    _leave_raw_tty,
     _prompt_bar,
     _read_key,
     _show_overlay,
     _vis_len,
     highlight_saylang_line,
+    load_bg_mode,
+    save_bg_mode,
 )
 
 _RESET = "\x1b[0m"
 _BOLD = "\x1b[1m"
 _DIM = "\x1b[2m"
-_INV = "\x1b[7m"
+_BRIGHT_WHITE = "\x1b[1;97m"
 _GRAY = "\x1b[90m"
 _GREEN = "\x1b[92m"
 _RED = "\x1b[91m"
@@ -796,45 +802,64 @@ def render_lesson_map(
     completed: set[str],
     rows: int,
     cols: int,
+    bg_mode: str = "mica",
 ) -> str:
-    """Render the freeCodeCamp-style curriculum map screen."""
-    rows = max(rows, 16)
-    cols = max(cols, 50)
+    """Render adaptive minimal freeCodeCamp-style curriculum map (Mica or Black)."""
+    rows = max(rows, 10)
+    cols = max(cols, 36)
     sel = max(0, min(selected, len(LESSONS) - 1))
 
     done_count = len(completed)
     bar = runtime.say_bar(done_count, len(LESSONS), width=20)
-    header = f" SAYLANG LEARN · Curriculum ({done_count}/{len(LESSONS)} complete) "
-    header_bar = f"{_INV}{header[:cols].ljust(cols)}{_RESET}"
-    footer = " ↑/↓ Lesson   Enter Start   1-9 Jump   r Reset Progress   q/Esc Quit "
-    footer_bar = f"{_INV}{footer[:cols].ljust(cols)}{_RESET}"
+    bg_tag = "mica" if bg_mode == "mica" else "black"
+    right_hdr = f"{done_count}/{len(LESSONS)} complete · {bg_tag} "
+    gap_top = max(cols - 16 - len(right_hdr), 1)
+    header_bar = f" {_BOLD}SAYLANG LEARN{_RESET}{' ' * gap_top}{_GRAY}{right_hdr}{_RESET}"
+    hairline = f"{_GRAY}{'─' * cols}{_RESET}"
+    footer_bar = f" {_DIM}↑/↓ Lesson   Enter Start   1-9 Jump   t Surface   r Reset   Esc/q Quit{_RESET}"
 
-    lines: list[str] = [
-        header_bar,
-        "",
-        f"  {_BOLD}SayLang Interactive Course{_RESET}  {_DIM}{bar} ({done_count}/{len(LESSONS)}){_RESET}",
-        f"  {_DIM}Learn by building real CLI tools, JSON workflows & TUI apps{_RESET}",
-        "",
-    ]
+    panel_w = min(cols - 4, 88) if cols >= 60 else cols - 2
+    margin = " " * max((cols - panel_w) // 2, 1)
 
-    for idx, lesson in enumerate(LESSONS):
+    lines: list[str] = [header_bar, hairline]
+    if rows >= 17:
+        lines.append("")
+        lines.append(f"{margin}{_BOLD}SayLang Interactive Course{_RESET}  {_GRAY}{bar}{_RESET}")
+        lines.append(f"{margin}{_GRAY}Learn by building real CLI tools, JSON workflows & TUI apps{_RESET}")
+        lines.append("")
+    else:
+        lines.append(f"{margin}{_BOLD}Curriculum{_RESET} {_GRAY}{bar}{_RESET}")
+
+    list_cap = max(rows - 2 - len(lines), 2)
+    scroll = max(0, sel - list_cap + 1)
+    for idx in range(scroll, min(len(LESSONS), scroll + list_cap)):
+        lesson = LESSONS[idx]
         mark = f"{_GREEN}✓{_RESET}" if lesson.id in completed else f"{_GRAY}○{_RESET}"
         badge = f"[{lesson.track}]"
-        raw = f"{lesson.number:>2}. {badge:<15} {lesson.title:<26} {lesson.goal}"
-        clipped = raw[: max(cols - 10, 20)]
+        goal_w = max(panel_w - 50, 8)
         if idx == sel:
-            lines.append(
-                f"  {_INV} ▸ {('✓ ' if lesson.id in completed else '○ ')}{clipped.ljust(max(cols - 10, 20))} {_RESET}"
-            )
+            if panel_w >= 62:
+                lines.append(
+                    f"{margin}{_BRIGHT_WHITE}▌ {mark} {lesson.number:>2}. {_CYAN}{badge:<15}{_RESET} {_BRIGHT_WHITE}{lesson.title[:25]:<25}{_RESET} \x1b[37m{lesson.goal[:goal_w]}{_RESET}"
+                )
+            else:
+                lines.append(
+                    f"{margin}{_BRIGHT_WHITE}▌ {mark} {lesson.number:>2}. {lesson.title}{_RESET}"
+                )
         else:
-            lines.append(f"   {mark} {_BOLD}{lesson.number:>2}.{_RESET} {_CYAN}{badge:<15}{_RESET} {lesson.title:<26} {_DIM}{lesson.goal[:max(cols - 54, 8)]}{_RESET}")
+            if panel_w >= 62:
+                lines.append(
+                    f"{margin}  {mark} {_GRAY}{lesson.number:>2}.{_RESET} {_CYAN}{badge:<15}{_RESET} \x1b[37m{lesson.title[:25]:<25}{_RESET} {_GRAY}{lesson.goal[:goal_w]}{_RESET}"
+                )
+            else:
+                lines.append(f"{margin}  {mark} {_GRAY}{lesson.number:>2}.{_RESET} \x1b[37m{lesson.title}{_RESET}")
 
-    body_target = rows - 1
+    body_target = rows - 2
     while len(lines) < body_target:
         lines.append("")
     lines = lines[:body_target]
-    lines.append(footer_bar)
-    return "\x1b[H\x1b[?25l" + "\n".join(f"{ln}\x1b[K" for ln in lines)
+    lines.extend([hairline, footer_bar])
+    return _compose_screen(lines, rows, cols, bg_mode=bg_mode)
 
 
 def render_learn_workspace(
@@ -845,29 +870,32 @@ def render_learn_workspace(
     completed: set[str],
     rows: int,
     cols: int,
+    bg_mode: str = "mica",
 ) -> str:
-    """Render the split-pane freeCodeCamp workspace (Brief/Tests left, Editor right)."""
-    rows = max(rows, 14)
-    cols = max(cols, 48)
-    body_rows = rows - 3
+    """Render adaptive split-pane freeCodeCamp workspace with hairline chrome."""
+    rows = max(rows, 10)
+    cols = max(cols, 36)
+    body_rows = rows - 4
 
-    status_done = " ✓ DONE" if lesson.id in completed else ""
-    left_hdr = f" LEARN {lesson.number}/{len(LESSONS)} · {lesson.title}{status_done} "
-    right_hdr = f"Ln {buf.row + 1}, Col {buf.col + 1}  SayLang v{__version__} "
-    gap = max(cols - len(left_hdr) - len(right_hdr), 1)
-    top_bar = f"{_INV}{(left_hdr + ' ' * gap + right_hdr)[:cols].ljust(cols)}{_RESET}"
+    status_done = " ✓" if lesson.id in completed else ""
+    right_hdr = f"Ln {buf.row + 1}, Col {buf.col + 1} · v{__version__} "
+    max_left = max(cols - len(right_hdr) - 4, 10)
+    left_plain = f" LEARN {lesson.number}/{len(LESSONS)} · {lesson.title}{status_done}"[:max_left]
+    gap = max(cols - len(left_plain) - len(right_hdr), 1)
+    top_bar = f" {_BOLD}LEARN {lesson.number}/{len(LESSONS)}{_RESET} {_GRAY}· {lesson.title[:max(max_left - 12, 8)]}{status_done}{_RESET}{' ' * gap}{_GRAY}{right_hdr}{_RESET}"
+    hairline = f"{_GRAY}{'─' * cols}{_RESET}"
 
     ok_syn, syn_msg = buf.check_syntax()
     syn_badge = f"{_GREEN}✓ {syn_msg}{_RESET}" if ok_syn else f"{_RED}✗ {syn_msg}{_RESET}"
     extra = f"  │  {buf.status}" if buf.status else ""
     status_line = f" {syn_badge}{extra}"
 
-    footer_txt = " ^T Check Tests  ^R Run  ^H Hint  ^B Brief  ^L Map  ^E Reset  ^X Exit "
-    footer_bar = f"{_INV}{footer_txt[:cols].ljust(cols)}{_RESET}"
+    footer_txt = " ^T Tests  ^R Run  ^H Hint  ^B Brief  ^L Map  ^E Reset  ^X Exit "
+    footer_bar = f"{_DIM}{footer_txt[:cols]}{_RESET}"
 
     if cols >= 92:
-        left_w = max(36, min(46, cols * 44 // 100))
-        right_start = left_w + 2  # after "│ "
+        left_w = max(36, min(52, cols * 42 // 100))
+        right_start = left_w + 1
         ed_total_w = max(cols - right_start, 24)
         gutter_w = max(len(str(len(buf.lines))) + 3, 6)
         code_w = max(ed_total_w - gutter_w, 12)
@@ -885,7 +913,7 @@ def render_learn_workspace(
         inner_left = left_w - 2
         left_lines: list[str] = [
             f" {_BOLD}{_CYAN}[{lesson.track}] {lesson.title}{_RESET}",
-            f" {_DIM}{'─' * min(inner_left, 40)}{_RESET}",
+            f" {_GRAY}{'─' * min(inner_left, 46)}{_RESET}",
         ]
         for ln in _wrap_text(lesson.explanation, inner_left):
             left_lines.append(f" {ln}")
@@ -909,15 +937,15 @@ def render_learn_workspace(
             if idx < len(test_results):
                 res = test_results[idx]
                 icon = f"{_GREEN}✓{_RESET}" if res.passed else f"{_RED}✗{_RESET}"
-                left_lines.append(f" {icon} {t.description[: inner_left - 2]}")
+                left_lines.append(f" {icon} {t.description[: max(inner_left - 2, 8)]}")
                 if not res.passed and res.detail:
-                    left_lines.append(f"   {_RED}{res.detail[: inner_left - 3]}{_RESET}")
+                    left_lines.append(f"   {_RED}{res.detail[: max(inner_left - 3, 8)]}{_RESET}")
             else:
-                left_lines.append(f" {_GRAY}○{_RESET} {t.description[: inner_left - 2]}")
+                left_lines.append(f" {_GRAY}○{_RESET} {t.description[: max(inner_left - 2, 8)]}")
 
-        out: list[str] = ["\x1b[H", f"{top_bar}\x1b[K\n"]
+        screen: list[str] = [top_bar, hairline]
         for r in range(body_rows):
-            l_txt = left_lines[r] if r < len(left_lines) else ""
+            l_txt = _clip_ansi(left_lines[r], left_w) if r < len(left_lines) else ""
             l_pad = " " * max(left_w - _vis_len(l_txt), 0)
             line_idx = buf.scroll_y + r
             if line_idx < len(buf.lines):
@@ -927,19 +955,17 @@ def render_learn_workspace(
                 r_txt = f"{_GRAY}{lineno} │ {_RESET}{hl}"
             else:
                 r_txt = f"{_GRAY}{'~':>{num_w}} │ {_RESET}"
-            out.append(f"{l_txt}{l_pad}{_GRAY}│{_RESET}{r_txt}\x1b[K\n")
+            screen.append(f"{l_txt}{l_pad}{_GRAY}│{_RESET}{r_txt}")
 
-        out.append(f"{status_line}\x1b[K\n")
-        out.append(f"{footer_bar}\x1b[K")
-        cur_r = (buf.row - buf.scroll_y) + 2
+        screen.append(status_line)
+        screen.append(footer_bar)
+        cur_r = (buf.row - buf.scroll_y) + 3
         cur_c = left_w + 1 + gutter_w + (buf.col - buf.scroll_x) + 1
-        out.append(f"\x1b[{cur_r};{cur_c}H")
-        return "".join(out)
+        return _compose_screen(screen, rows, cols, cursor=(cur_r, cur_c), bg_mode=bg_mode)
 
-    # Narrow stacked editor + goal strip
     gutter_w = max(len(str(len(buf.lines))) + 3, 6)
     code_w = max(cols - gutter_w, 10)
-    ed_rows = max(body_rows - 2, 4)
+    ed_rows = max(body_rows - 2, 3)
     if buf.row < buf.scroll_y:
         buf.scroll_y = buf.row
     elif buf.row >= buf.scroll_y + ed_rows:
@@ -950,12 +976,12 @@ def render_learn_workspace(
         buf.scroll_x = buf.col - code_w + 1
 
     passed_n = sum(1 for r in test_results if r.passed)
-    goal_bar = f" Goal: {lesson.goal[:max(cols - 26, 12)]}  [{passed_n}/{len(lesson.tests)}]"
-    out_n: list[str] = [
-        "\x1b[H",
-        f"{top_bar}\x1b[K\n",
-        f" {_CYAN}{goal_bar[:cols - 1]}{_RESET}\x1b[K\n",
-        f" {_DIM}{'─' * min(cols - 2, 50)}{_RESET}\x1b[K\n",
+    goal_bar = f" Goal: {lesson.goal[:max(cols - 26, 10)]}  [{passed_n}/{len(lesson.tests)}]"
+    screen_n: list[str] = [
+        top_bar,
+        hairline,
+        f" {_CYAN}{goal_bar[:max(cols - 2, 8)]}{_RESET}",
+        f" {_GRAY}{'─' * min(max(cols - 2, 6), 50)}{_RESET}",
     ]
     num_w = gutter_w - 3
     for r in range(ed_rows):
@@ -964,16 +990,15 @@ def render_learn_workspace(
             raw_code = buf.lines[line_idx][buf.scroll_x : buf.scroll_x + code_w]
             hl = highlight_saylang_line(raw_code)
             lineno = f"{line_idx + 1:>{num_w}}"
-            out_n.append(f"{_GRAY}{lineno} │ {_RESET}{hl}\x1b[K\n")
+            screen_n.append(f"{_GRAY}{lineno} │ {_RESET}{hl}")
         else:
-            out_n.append(f"{_GRAY}{'~':>{num_w}} │ {_RESET}\x1b[K\n")
+            screen_n.append(f"{_GRAY}{'~':>{num_w}} │ {_RESET}")
 
-    out_n.append(f"{status_line}\x1b[K\n")
-    out_n.append(f"{footer_bar}\x1b[K")
-    cur_r = (buf.row - buf.scroll_y) + 4
+    screen_n.append(status_line)
+    screen_n.append(footer_bar)
+    cur_r = (buf.row - buf.scroll_y) + 5
     cur_c = gutter_w + (buf.col - buf.scroll_x) + 1
-    out_n.append(f"\x1b[{cur_r};{cur_c}H")
-    return "".join(out_n)
+    return _compose_screen(screen_n, rows, cols, cursor=(cur_r, cur_c), bg_mode=bg_mode)
 
 
 def _format_brief_overlay(lesson: Lesson, results: list[TestResult], hint_idx: int) -> str:
@@ -1003,7 +1028,7 @@ def _format_brief_overlay(lesson: Lesson, results: list[TestResult], hint_idx: i
     return "\n".join(parts)
 
 
-def _run_lesson_preview(lesson: Lesson, code: str) -> None:
+def _run_lesson_preview(lesson: Lesson, code: str, *, bg_mode: str = "mica") -> None:
     """Run current lesson code safely and display output overlay."""
     sample = lesson.tests[0] if lesson.tests else None
     cli_args = list(sample.cli_args) if sample else []
@@ -1028,7 +1053,7 @@ def _run_lesson_preview(lesson: Lesson, code: str) -> None:
         os.chdir(prev_cwd)
         if tmp_ctx is not None:
             tmp_ctx.cleanup()
-    _show_overlay(f"Run Output · {lesson.title}", body)
+    _show_overlay(f"Run Output · {lesson.title}", body, bg_mode=bg_mode)
 
 
 def run_learn(
@@ -1036,6 +1061,8 @@ def run_learn(
     *,
     list_only: bool = False,
     reset: bool = False,
+    bg: str | None = None,
+    _managed_tty: bool = False,
 ) -> int:
     """Launch the freeCodeCamp-style `saylang learn` TUI course."""
     runtime.say_configure_utf8_stdio()
@@ -1051,6 +1078,7 @@ def run_learn(
     drafts: dict[str, str] = {
         str(k): str(v) for k, v in dict(progress.get("drafts", {})).items()  # type: ignore[arg-type]
     }
+    bg_state = [save_bg_mode(bg) if bg else load_bg_mode()]
 
     if list_only:
         print(format_curriculum_list(completed))
@@ -1062,18 +1090,12 @@ def run_learn(
         return 1
 
     runtime._enable_windows_ansi()
-    old_attrs = None
-    if sys.platform != "win32":
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        old_attrs = termios.tcgetattr(fd)
-        tty.setraw(fd)
+    saved_tty = None if _managed_tty else _enter_raw_tty()
 
     try:
-        sys.stdout.write("\x1b[?1049h")
-        sys.stdout.flush()
+        if not _managed_tty:
+            sys.stdout.write("\x1b[?1049h")
+            sys.stdout.flush()
 
         def save_state(cur_num: int, buf: NanaBuffer | None = None, lesson: Lesson | None = None) -> None:
             if buf is not None and lesson is not None:
@@ -1090,9 +1112,16 @@ def run_learn(
             sel = max(0, min(initial_sel, len(LESSONS) - 1))
             while True:
                 cols, rows = shutil.get_terminal_size((80, 24))
-                sys.stdout.write(render_lesson_map(sel, completed, rows, cols))
+                sys.stdout.write(
+                    render_lesson_map(sel, completed, rows, cols, bg_mode=bg_state[0])
+                )
                 sys.stdout.flush()
                 k = _read_key()
+                if k == "RESIZE":
+                    continue
+                if k == "t":
+                    bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
+                    continue
                 if k == "UP":
                     sel = (sel - 1) % len(LESSONS)
                 elif k == "DOWN":
@@ -1102,7 +1131,9 @@ def run_learn(
                 elif k.isdigit() and 1 <= int(k) <= len(LESSONS):
                     return int(k) - 1
                 elif k == "r":
-                    ans = _prompt_bar("Reset all course progress? (y/n): ")
+                    ans = _prompt_bar(
+                        "Reset all course progress? (y/n): ", bg_mode=bg_state[0]
+                    )
                     if ans and ans.lower().startswith("y"):
                         completed.clear()
                         drafts.clear()
@@ -1113,8 +1144,9 @@ def run_learn(
         cur_idx: int | None
         if lesson_num is not None:
             if not (1 <= lesson_num <= len(LESSONS)):
-                sys.stdout.write("\x1b[?1049l\x1b[?25h\x1b[0m")
-                sys.stdout.flush()
+                if not _managed_tty:
+                    sys.stdout.write("\x1b[?1049l\x1b[?25h\x1b[0m")
+                    sys.stdout.flush()
                 print(
                     f"Lesson {lesson_num} does not exist. Choose 1..{len(LESSONS)}.",
                     file=sys.stderr,
@@ -1140,14 +1172,22 @@ def run_learn(
             while True:
                 cols, rows = shutil.get_terminal_size((80, 24))
                 sys.stdout.write(
-                    "\x1b[?25h"
-                    + render_learn_workspace(
-                        lesson, buf, results, hint_idx, completed, rows, cols
+                    render_learn_workspace(
+                        lesson,
+                        buf,
+                        results,
+                        hint_idx,
+                        completed,
+                        rows,
+                        cols,
+                        bg_mode=bg_state[0],
                     )
                 )
                 sys.stdout.flush()
 
                 key = _read_key()
+                if key == "RESIZE":
+                    continue
                 buf.status = ""
 
                 if key in ("\x18", "\x11", "\x03"):  # Ctrl+X / Ctrl+Q / Ctrl+C
@@ -1200,7 +1240,7 @@ def run_learn(
                     continue
 
                 if key == "\x12":  # Ctrl+R -> Run Live
-                    _run_lesson_preview(lesson, buf.text)
+                    _run_lesson_preview(lesson, buf.text, bg_mode=bg_state[0])
                     continue
 
                 if key == "\x08":  # Ctrl+H -> Hint / Solution
@@ -1211,6 +1251,7 @@ def run_learn(
                         _show_overlay(
                             f"Reference Solution · Lesson {lesson.number}",
                             lesson.solution,
+                            bg_mode=bg_state[0],
                         )
                     continue
 
@@ -1218,11 +1259,14 @@ def run_learn(
                     _show_overlay(
                         f"Lesson {lesson.number} · {lesson.title}",
                         _format_brief_overlay(lesson, results, hint_idx),
+                        bg_mode=bg_state[0],
                     )
                     continue
 
                 if key == "\x05":  # Ctrl+E -> Reset starter
-                    ans = _prompt_bar("Reset code to starter? (y/n): ", buf=buf)
+                    ans = _prompt_bar(
+                        "Reset code to starter? (y/n): ", buf=buf, bg_mode=bg_state[0]
+                    )
                     if ans and ans.lower().startswith("y"):
                         buf = NanaBuffer(
                             lines=lesson.starter.rstrip("\n").split("\n") or [""],
@@ -1236,7 +1280,9 @@ def run_learn(
                     continue
 
                 if key == "\x13":  # Ctrl+S -> Save/export .pl file
-                    fname = _prompt_bar("Save to .pl file: ", f"{lesson.id}.pl", buf=buf)
+                    fname = _prompt_bar(
+                        "Save to .pl file: ", f"{lesson.id}.pl", buf=buf, bg_mode=bg_state[0]
+                    )
                     if fname:
                         buf.save(Path(fname))
                         buf.filepath = Path(f"{lesson.id}.pl")
@@ -1271,9 +1317,7 @@ def run_learn(
 
         return 0
     finally:
-        sys.stdout.write("\x1b[?1049l\x1b[?25h\x1b[0m")
-        sys.stdout.flush()
-        if old_attrs is not None:
-            import termios
-
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_attrs)
+        if not _managed_tty:
+            sys.stdout.write("\x1b[?1049l\x1b[?25h\x1b[0m")
+            sys.stdout.flush()
+            _leave_raw_tty(saved_tty)

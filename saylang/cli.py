@@ -93,6 +93,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "nana", help="Open the built-in SayLang text editor (nana)."
     )
     p_nana.add_argument("file", nargs="?", help="Optional .pl file to edit")
+    p_nana.add_argument(
+        "--bg",
+        choices=["mica", "black"],
+        help="Terminal surface mode: transparent mica or pure black",
+    )
 
     p_learn = sub.add_parser(
         "learn", help="Start the interactive freeCodeCamp-style SayLang TUI course."
@@ -105,6 +110,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_learn.add_argument(
         "--reset", action="store_true", help="Reset saved course progress"
+    )
+    p_learn.add_argument(
+        "--bg",
+        choices=["mica", "black"],
+        help="Terminal surface mode: transparent mica or pure black",
     )
 
     sub.add_parser("repl", help="Start the interactive SayLang REPL.")
@@ -155,9 +165,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "nana":
+        if args.bg:
+            return run_nana(args.file, bg=args.bg)
         return run_nana(args.file)
 
     if args.command == "learn":
+        if args.bg:
+            return run_learn(
+                args.lesson, list_only=args.list_only, reset=args.reset, bg=args.bg
+            )
         return run_learn(args.lesson, list_only=args.list_only, reset=args.reset)
 
     try:

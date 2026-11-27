@@ -136,12 +136,21 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
         lesson = LESSONS[0]
         ebuf = NanaBuffer(lines=lesson.starter.splitlines())
         res = evaluate_lesson(lesson, lesson.starter)
-        wide = render_learn_workspace(lesson, ebuf, res, 1, set(), 28, 100)
+        wide = render_learn_workspace(lesson, ebuf, res, 1, set(), 28, 100, bg_mode="mica")
+        self.assertNotIn("\n", wide)
+        self.assertNotIn("\x1b[7m", wide)
+        self.assertIn("\x1b[49m", wide)
         self.assertIn("Challenge:", wide)
         self.assertIn("Hint:", wide)
-        narrow = render_learn_workspace(lesson, ebuf, res, 0, set(), 20, 60)
+
+        narrow = render_learn_workspace(lesson, ebuf, res, 0, set(), 14, 48, bg_mode="black")
+        self.assertNotIn("\n", narrow)
+        self.assertNotIn("\x1b[7m", narrow)
+        self.assertIn("\x1b[40;48;2;0;0;0m", narrow)
         self.assertIn("Goal:", narrow)
-        cmap = render_lesson_map(0, {"01-styled-cards"}, 24, 90)
+
+        cmap = render_lesson_map(0, {"01-styled-cards"}, 24, 90, bg_mode="mica")
+        self.assertNotIn("\n", cmap)
         self.assertIn("SayLang Interactive Course", cmap)
         self.assertIn("10%", format_curriculum_list({"01-styled-cards"}))
 
