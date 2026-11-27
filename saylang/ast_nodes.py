@@ -28,6 +28,32 @@ class Expr(Node):
 
 
 @dataclass
+class ImportStmt(Stmt):
+    modules: list[str]
+
+
+@dataclass
+class FlagsDeclStmt(Stmt):
+    flags: list[str]
+
+
+@dataclass
+class ClearScreenStmt(Stmt):
+    pass
+
+
+@dataclass
+class WaitStmt(Stmt):
+    seconds: Expr
+
+
+@dataclass
+class EveryStmt(Stmt):
+    interval: Expr
+    body: list[Stmt]
+
+
+@dataclass
 class SetStmt(Stmt):
     target: Expr
     value: Expr
@@ -46,6 +72,8 @@ class SayStmt(Stmt):
     color: Expr | None = None
     background: Expr | None = None
     styles: list[str] = field(default_factory=list)
+    position: str | None = None
+    anchor: str | None = None
 
 
 @dataclass
@@ -198,6 +226,26 @@ class CompareOp(Expr):
 class CallExpr(Expr):
     name: str
     args: list[Expr]
+
+
+@dataclass
+class FlagExpr(Expr):
+    name: str
+
+
+@dataclass
+class LibCallExpr(Expr):
+    name: str
+    args: list[Expr]
+    options: dict[str, Expr]
+
+
+@dataclass
+class PipeExpr(Expr):
+    left: Expr
+    stage_name: str
+    args: list[Expr]
+    options: dict[str, Expr]
 
 
 @dataclass

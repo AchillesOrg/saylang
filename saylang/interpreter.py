@@ -15,20 +15,27 @@ from saylang.ast_nodes import (
     BuiltinExpr,
     CallExpr,
     ChangeStmt,
+    ClearScreenStmt,
     CompareOp,
     EntryAccess,
+    EveryStmt,
     Expr,
     ExprStmt,
     FailStmt,
     FieldAccess,
+    FlagExpr,
+    FlagsDeclStmt,
     ForEachStmt,
     ForRangeStmt,
     FuncDefStmt,
     IfStmt,
+    ImportStmt,
     ItemAccess,
+    LibCallExpr,
     ListLiteral,
     Literal,
     MapLiteral,
+    PipeExpr,
     Program,
     ReadFileExpr,
     RemoveStmt,
@@ -42,6 +49,7 @@ from saylang.ast_nodes import (
     TryStmt,
     UnaryOp,
     Var,
+    WaitStmt,
     WhileStmt,
     WriteFileStmt,
 )
@@ -127,6 +135,7 @@ class Interpreter:
         source: str = "",
         stdout: TextIO | None = None,
         input_fn: Callable[[str], str] | None = None,
+        cli_args: list[str] | None = None,
     ) -> None:
         self.source_lines = (
             source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -135,6 +144,8 @@ class Interpreter:
         )
         self.stdout = stdout if stdout is not None else sys.stdout
         self.input_fn = input_fn if input_fn is not None else input
+        if cli_args is not None:
+            runtime.say_set_cli_args(cli_args)
         self.global_env = Environment()
         self.env = self.global_env
 
@@ -229,6 +240,37 @@ class Interpreter:
 
     def _exec_stmt(self, stmt: Stmt, env: Environment) -> object:
         try:
+            if isinstance(stmt, ImportStmt):
+                runtime.say_import_modules(stmt.modules)
+                return None
+
+            if isinstance(stmt, FlagsDeclStmt):
+                return None
+
+            if isinstance(stmt, ClearScreenStmt):
+                runtime.say_clear_screen(self.stdout)
+                return None
+
+            if isinstance(stmt, WaitStmt):
+                secs = self._eval_expr(stmt.seconds, env)
+                runtime.say_sleep(secs)
+                return None
+
+            if isinstance(stmt, EveryStmt):
+                interval = self._eval_expr(stmt.interval, env)
+                try:
+                    while True:
+                        try:
+                            self._exec_block(stmt.body, env)
+                        except _SkipSignal:
+                            pass
+                        except _StopSignal:
+                            break
+                        runtime.say_sleep(interval)
+                except KeyboardInterrupt:
+                    return None
+                return None
+
             if isinstance(stmt, SetStmt):
                 val = self._eval_expr(stmt.value, env)
                 self._assign_target(stmt.target, val, env)
@@ -250,6 +292,9 @@ class Interpreter:
                     for v in stmt.values
                 ]
                 text = "".join(parts)
+                if stmt.position is not None:
+                    text = runtime.say_format_layout(text, stmt.position)
+                runtime.say_record_print(text)
                 if stmt.color is not None or stmt.background is not None or stmt.styles:
                     color_val = (
                         self._eval_expr(stmt.color, env)
@@ -395,8 +440,7 @@ class Interpreter:
                 target = self._eval_expr(stmt.target, env)
                 if stmt.kind == "item":
                     runtime.say_remove_item(target, item)
-                elif expr_kind_is_entry := (stmt.kind == "entry"):
-                    _ = expr_kind_is_entry
+                elif stmt.kind == "entry":
                     runtime.say_remove_entry(target, item)
                 else:
                     runtime.say_remove_value(target, item)
@@ -422,19 +466,9 @@ class Interpreter:
         except SayRuntimeError as exc:
             raise self._attach_loc(exc, stmt.line, stmt.column) from exc
 
-    def _call_function(
-        self, name: str, arg_vals: list[object], env: Environment, line: int, column: int
+    def _invoke_say_function(
+        self, fn: SayFunction, arg_vals: list[object], line: int, column: int
     ) -> object:
-        try:
-            fn = env.get(name)
-        except KeyError as exc:
-            raise self._error(f"Function '{name}' is not defined.", line, column) from exc
-        if not isinstance(fn, SayFunction):
-            raise self._error(
-                f"'{name}' is a {runtime.say_type_of(fn)}, not a function.",
-                line,
-                column,
-            )
         if len(arg_vals) != len(fn.params):
             raise self._error(
                 f"Function '{fn.name}' expects {len(fn.params)} argument(s), got {len(arg_vals)}.",
@@ -458,6 +492,21 @@ class Interpreter:
             ) from sig
         return None
 
+    def _call_function(
+        self, name: str, arg_vals: list[object], env: Environment, line: int, column: int
+    ) -> object:
+        try:
+            fn = env.get(name)
+        except KeyError as exc:
+            raise self._error(f"Function '{name}' is not defined.", line, column) from exc
+        if not isinstance(fn, SayFunction):
+            raise self._error(
+                f"'{name}' is a {runtime.say_type_of(fn)}, not a function.",
+                line,
+                column,
+            )
+        return self._invoke_say_function(fn, arg_vals, line, column)
+
     def _eval_expr(self, expr: Expr, env: Environment) -> object:
         try:
             if isinstance(expr, Literal):
@@ -467,11 +516,38 @@ class Interpreter:
                 try:
                     return env.get(expr.name)
                 except KeyError as exc:
+                    if expr.name.lower() in runtime.AUTO_LIB_VALUES:
+                        return runtime.say_lib_call(expr.name.lower(), [], {})
                     raise self._error(
                         f'Variable \'{expr.name}\' is not defined. If you meant text, wrap it in quotes like "{expr.name}".',
                         expr.line,
                         expr.column,
                     ) from exc
+
+            if isinstance(expr, FlagExpr):
+                return runtime.say_get_flag(expr.name)
+
+            if isinstance(expr, LibCallExpr):
+                args = [self._eval_expr(a, env) for a in expr.args]
+                opts = {k: self._eval_expr(v, env) for k, v in expr.options.items()}
+                return runtime.say_lib_call(expr.name, args, opts)
+
+            if isinstance(expr, PipeExpr):
+                left_val = self._eval_expr(expr.left, env)
+                args = [self._eval_expr(a, env) for a in expr.args]
+                opts = {k: self._eval_expr(v, env) for k, v in expr.options.items()}
+                user_fn: Callable[..., object] | None = None
+                try:
+                    maybe_fn = env.get(expr.stage_name)
+                    if isinstance(maybe_fn, SayFunction):
+                        user_fn = lambda *call_args: self._invoke_say_function(
+                            maybe_fn, list(call_args), expr.line, expr.column
+                        )
+                except KeyError:
+                    pass
+                return runtime.say_pipe(
+                    left_val, expr.stage_name, args, opts, user_fn=user_fn
+                )
 
             if isinstance(expr, ListLiteral):
                 return [self._eval_expr(el, env) for el in expr.elements]
@@ -583,9 +659,12 @@ def run_program(
     source: str = "",
     stdout: TextIO | None = None,
     input_fn: Callable[[str], str] | None = None,
+    cli_args: list[str] | None = None,
 ) -> object:
     """Execute a parsed SayLang Program AST."""
-    return Interpreter(source=source, stdout=stdout, input_fn=input_fn).run(program)
+    return Interpreter(
+        source=source, stdout=stdout, input_fn=input_fn, cli_args=cli_args
+    ).run(program)
 
 
 def run_source(
@@ -593,14 +672,20 @@ def run_source(
     *,
     stdout: TextIO | None = None,
     input_fn: Callable[[str], str] | None = None,
+    cli_args: list[str] | None = None,
 ) -> object:
     """Parse and execute SayLang source code."""
     program = parse_source(source)
-    return run_program(program, source=source, stdout=stdout, input_fn=input_fn)
+    return run_program(
+        program, source=source, stdout=stdout, input_fn=input_fn, cli_args=cli_args
+    )
 
 
 def run_and_capture(
-    source: str, *, input_lines: list[str] | None = None
+    source: str,
+    *,
+    input_lines: list[str] | None = None,
+    cli_args: list[str] | None = None,
 ) -> tuple[str, object]:
     """Convenience helper returning (captured_stdout, last_value)."""
     buf = io.StringIO()
@@ -618,5 +703,6 @@ def run_and_capture(
         source,
         stdout=buf,
         input_fn=_fake_input if input_lines is not None else None,
+        cli_args=cli_args if cli_args is not None else [],
     )
     return buf.getvalue(), val

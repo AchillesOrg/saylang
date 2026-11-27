@@ -13,20 +13,27 @@ from saylang.ast_nodes import (
     BuiltinExpr,
     CallExpr,
     ChangeStmt,
+    ClearScreenStmt,
     CompareOp,
     EntryAccess,
+    EveryStmt,
     Expr,
     ExprStmt,
     FailStmt,
     FieldAccess,
+    FlagExpr,
+    FlagsDeclStmt,
     ForEachStmt,
     ForRangeStmt,
     FuncDefStmt,
     IfStmt,
+    ImportStmt,
     ItemAccess,
+    LibCallExpr,
     ListLiteral,
     Literal,
     MapLiteral,
+    PipeExpr,
     Program,
     ReadFileExpr,
     RemoveStmt,
@@ -40,10 +47,12 @@ from saylang.ast_nodes import (
     TryStmt,
     UnaryOp,
     Var,
+    WaitStmt,
     WhileStmt,
     WriteFileStmt,
 )
 from saylang.parser import parse_source
+from saylang.runtime import AUTO_LIB_VALUES
 
 _START_MARKER = "# --- SAYLANG RUNTIME START ---"
 _END_MARKER = "# --- SAYLANG RUNTIME END ---"
@@ -70,10 +79,16 @@ _RESERVED_PY_NAMES = {
     "round",
     "sorted",
     "reversed",
+    "datetime",
     "math",
+    "os",
     "random",
+    "re",
+    "shutil",
     "sys",
+    "_time",
     "Path",
+    "AUTO_LIB_VALUES",
     "SayRuntimeError",
     "Exception",
 }
@@ -143,6 +158,50 @@ def _py_name(name: str) -> str:
     return name
 
 
+def _collect_defined_names(stmts: list[Stmt]) -> tuple[set[str], set[str]]:
+    """Collect (all_bound_var_names, user_function_names) across the AST."""
+    bound: set[str] = set()
+    funcs: set[str] = set()
+
+    def walk(body: list[Stmt]) -> None:
+        for s in body:
+            if isinstance(s, SetStmt) and isinstance(s.target, Var):
+                bound.add(s.target.name)
+            elif isinstance(s, FuncDefStmt):
+                bound.add(s.name)
+                funcs.add(s.name)
+                bound.update(s.params)
+                walk(s.body)
+            elif isinstance(s, RepeatStmt):
+                if s.var_name:
+                    bound.add(s.var_name)
+                walk(s.body)
+            elif isinstance(s, ForRangeStmt):
+                bound.add(s.var_name)
+                walk(s.body)
+            elif isinstance(s, ForEachStmt):
+                bound.add(s.var_name)
+                if s.value_var_name:
+                    bound.add(s.value_var_name)
+                walk(s.body)
+            elif isinstance(s, WhileStmt):
+                walk(s.body)
+            elif isinstance(s, EveryStmt):
+                walk(s.body)
+            elif isinstance(s, IfStmt):
+                for br in s.branches:
+                    walk(br.body)
+                walk(s.else_body)
+            elif isinstance(s, TryStmt):
+                if s.error_var:
+                    bound.add(s.error_var)
+                walk(s.try_body)
+                walk(s.catch_body)
+
+    walk(stmts)
+    return bound, funcs
+
+
 class PythonTranspiler:
     """Emit standalone Python 3 code matching SayLang interpreter semantics."""
 
@@ -151,6 +210,8 @@ class PythonTranspiler:
         self._lines: list[str] = []
         self._indent = 0
         self._tmp_counter = 0
+        self._bound_names: set[str] = set()
+        self._func_names: set[str] = set()
 
     def _emit(self, line: str = "") -> None:
         if line:
@@ -167,6 +228,9 @@ class PythonTranspiler:
         self._lines = []
         self._indent = 0
         self._tmp_counter = 0
+        self._bound_names, self._func_names = _collect_defined_names(
+            program.statements
+        )
 
         self._emit('"""Compiled from SayLang source."""')
         self._emit()
@@ -219,6 +283,38 @@ class PythonTranspiler:
         raise ValueError(f"Unsupported assignment target: {type(target).__name__}")
 
     def _emit_stmt(self, stmt: Stmt) -> None:
+        if isinstance(stmt, ImportStmt):
+            self._emit(f"say_import_modules({stmt.modules!r})")
+            return
+
+        if isinstance(stmt, FlagsDeclStmt):
+            self._emit(f"# flags: {', '.join(stmt.flags)}")
+            return
+
+        if isinstance(stmt, ClearScreenStmt):
+            self._emit("say_clear_screen()")
+            return
+
+        if isinstance(stmt, WaitStmt):
+            self._emit(f"say_sleep({self._emit_expr(stmt.seconds)})")
+            return
+
+        if isinstance(stmt, EveryStmt):
+            interval_var = self._fresh("_interval")
+            self._emit(f"{interval_var} = {self._emit_expr(stmt.interval)}")
+            self._emit("try:")
+            self._indent += 1
+            self._emit("while True:")
+            self._emit_block(stmt.body)
+            self._indent += 1
+            self._emit(f"say_sleep({interval_var})")
+            self._indent -= 2
+            self._emit("except KeyboardInterrupt:")
+            self._indent += 1
+            self._emit("pass")
+            self._indent -= 1
+            return
+
         if isinstance(stmt, SetStmt):
             self._emit_assign(stmt.target, self._emit_expr(stmt.value))
             return
@@ -268,6 +364,14 @@ class PythonTranspiler:
                 )
                 text_expr = f"''.join([{parts}])"
 
+            txt_var = self._fresh("_txt")
+            self._emit(f"{txt_var} = {text_expr}")
+            if stmt.position is not None:
+                self._emit(
+                    f"{txt_var} = say_format_layout({txt_var}, {stmt.position!r})"
+                )
+            self._emit(f"say_record_print({txt_var})")
+
             if stmt.color is not None or stmt.background is not None or stmt.styles:
                 color_code = (
                     self._emit_expr(stmt.color) if stmt.color is not None else "None"
@@ -278,11 +382,12 @@ class PythonTranspiler:
                     else "None"
                 )
                 styles_code = repr(stmt.styles)
-                text_expr = (
-                    f"say_style_text({text_expr}, color={color_code}, "
-                    f"background={bg_code}, styles={styles_code})"
+                self._emit(
+                    f"print(say_style_text({txt_var}, color={color_code}, "
+                    f"background={bg_code}, styles={styles_code}))"
                 )
-            self._emit(f"print({text_expr})")
+            else:
+                self._emit(f"print({txt_var})")
             return
 
         if isinstance(stmt, IfStmt):
@@ -434,7 +539,38 @@ class PythonTranspiler:
             return repr(expr.value)
 
         if isinstance(expr, Var):
+            if (
+                expr.name.lower() in AUTO_LIB_VALUES
+                and expr.name not in self._bound_names
+            ):
+                return f"say_lib_call({expr.name.lower()!r}, [], {{}})"
             return _py_name(expr.name)
+
+        if isinstance(expr, FlagExpr):
+            return f"say_get_flag({expr.name!r})"
+
+        if isinstance(expr, LibCallExpr):
+            args = ", ".join(self._emit_expr(a) for a in expr.args)
+            opts = ", ".join(
+                f"{k!r}: {self._emit_expr(v)}" for k, v in expr.options.items()
+            )
+            return f"say_lib_call({expr.name!r}, [{args}], {{{opts}}})"
+
+        if isinstance(expr, PipeExpr):
+            left_code = self._emit_expr(expr.left)
+            args = ", ".join(self._emit_expr(a) for a in expr.args)
+            opts = ", ".join(
+                f"{k!r}: {self._emit_expr(v)}" for k, v in expr.options.items()
+            )
+            user_fn = (
+                _py_name(expr.stage_name)
+                if expr.stage_name in self._func_names
+                else "None"
+            )
+            return (
+                f"say_pipe({left_code}, {expr.stage_name!r}, "
+                f"[{args}], {{{opts}}}, user_fn={user_fn})"
+            )
 
         if isinstance(expr, ListLiteral):
             items = ", ".join(self._emit_expr(el) for el in expr.elements)

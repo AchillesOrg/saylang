@@ -35,13 +35,39 @@ python3 scripts/build_app.py
 
 ```sh
 saylang run examples/hello.pl
+saylang examples/clock.pl -d
 saylang examples/fizzbuzz.pl
 saylang compile examples/fibonacci.pl --run
 saylang english "print hello world lol in red" --run
+saylang nana examples/clock.pl
 saylang repl
 ```
 
 *(If running directly from the repo without installing, replace `saylang` with `python3 -m saylang`.)*
+
+## Prebuilt Libraries, Pipes & CLI Flags
+
+Built-in libraries (`time`, `ascii`, `color`, `text`, `math`, `sys`, `flags`, `tty`) work with explicit `import` or auto-imported out of the box:
+
+```text
+import time, ascii
+print time --12h | ascii --size default
+if flag -d then print date below time
+flags: -d
+```
+
+Run it with `saylang examples/clock.pl -d` — or build a live ticking clock using `every 1 second` + `clear screen` (see `examples/live_clock.pl`).
+
+## Built-in `nana` Editor
+
+Edit `.pl` files with live SayLang syntax highlighting, smart auto-indent, live syntax status, and in-editor run (`Ctrl+R`):
+
+```sh
+saylang nana clock.pl
+```
+
+Or type `nana` (or `nana clock.pl`) directly inside the `saylang` REPL.
+- `Ctrl+S` Save · `Ctrl+R` Run · `Ctrl+K` Cut line · `Ctrl+U` Paste line · `Ctrl+G` Help · `Ctrl+X` Exit
 
 ## Syntax Cheat Sheet
 

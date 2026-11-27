@@ -13,6 +13,7 @@ from saylang import __version__
 from saylang.banner import render_startup_banner
 from saylang.errors import SayError
 from saylang.interpreter import Interpreter
+from saylang.nana import run_nana
 from saylang.parser import parse_source
 from saylang.translator import translate_english
 from saylang.transpiler import compile_to_python
@@ -24,6 +25,7 @@ _BLOCK_OPENERS = (
     "repeat ",
     "for each ",
     "while ",
+    "every ",
     "to ",
     "try",
 )
@@ -34,6 +36,8 @@ def _opens_block(line: str) -> bool:
     if not s:
         return False
     lower = s.lower()
+    if " then " in f" {lower} ":
+        return False
     if lower.endswith(":"):
         return True
     if lower == "try" or lower.startswith("try:"):
@@ -43,6 +47,7 @@ def _opens_block(line: str) -> bool:
 
 _HELP_TEXT = """SayLang REPL commands:
   :help             Show this help message
+  :nana [file.pl]   Open the built-in SayLang editor (`nana` also works)
   :vars             List defined variables and functions
   :run <file.pl>    Run a .pl file in the current session
   :py               Show compiled Python for the last snippet
@@ -51,10 +56,10 @@ _HELP_TEXT = """SayLang REPL commands:
   :reset            Clear all variables and functions
   :quit             Exit the REPL
 
-Multi-line blocks (if, repeat, for each, while, to, try):
+Multi-line blocks (if, repeat, for each, while, every, to, try):
   Indent block bodies with spaces, then press Enter on a blank line to run."""
 
-_BARE_COMMANDS = {"help", "quit", "exit", "vars"}
+_BARE_COMMANDS = {"help", "quit", "exit", "vars", "nana"}
 
 
 class SayREPL:
@@ -99,6 +104,10 @@ class SayREPL:
             return False
         if cmd_lower in (":help", ":h"):
             self._write(_HELP_TEXT)
+            return True
+        if cmd_lower == ":nana":
+            target = arg.strip() or None
+            run_nana(target)
             return True
         if cmd_lower == ":reset":
             self.interpreter = Interpreter(stdout=self.stdout, input_fn=self.input_fn)
@@ -156,7 +165,11 @@ class SayREPL:
             ):
                 self._write("Translating... (Ctrl+C to cancel)")
             try:
-                res = translate_english(text_arg, provider=provider)
+                res = translate_english(
+                    text_arg,
+                    provider=provider,
+                    context_vars=list(self.interpreter.global_env.values.keys()),
+                )
                 self._write(f"[saylang ({res.backend})]")
                 for pline in res.say_code.splitlines():
                     self._write(f"  {pline}")
@@ -210,10 +223,15 @@ class SayREPL:
                     except KeyboardInterrupt:
                         self._write("\nCancelled.")
                     continue
-                bare = line.strip().lower()
-                if bare in _BARE_COMMANDS and bare not in self.interpreter.global_env.values:
+                stripped = line.strip()
+                head, _, _ = stripped.partition(" ")
+                bare = head.lower()
+                if (
+                    (stripped.lower() in _BARE_COMMANDS or bare == "nana")
+                    and bare not in self.interpreter.global_env.values
+                ):
                     try:
-                        if not self._handle_command(f":{bare}"):
+                        if not self._handle_command(f":{stripped}"):
                             return 0
                     except KeyboardInterrupt:
                         self._write("\nCancelled.")

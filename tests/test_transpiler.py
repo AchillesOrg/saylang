@@ -35,6 +35,10 @@ class TestTranspiler(unittest.TestCase):
         for path in example_files:
             with self.subTest(example=path.name):
                 src = path.read_text(encoding="utf-8")
+                if path.name in ("live_clock.pl", "clock.pl"):
+                    py_code = compile_to_python(src, standalone=True)
+                    self.assertIn("say_lib_call", py_code)
+                    continue
                 interp_out, _ = run_and_capture(src)
                 compiled_out = _run_compiled_python(src)
                 self.assertEqual(compiled_out, interp_out)

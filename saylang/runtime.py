@@ -5,9 +5,14 @@ from __future__ import annotations
 from saylang.errors import SayRuntimeError
 
 # --- SAYLANG RUNTIME START ---
+import datetime
 import math
+import os
 import random
+import re
+import shutil
 import sys
+import time as _time
 from pathlib import Path
 
 try:
@@ -32,6 +37,35 @@ except NameError:
 
 
 _ANSI_INITIALIZED = False
+_CLI_ARGS: list[str] | None = None
+_LAST_PRINT_WIDTH = 0
+_ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+_PREBUILT_LIBS = {
+    "time",
+    "ascii",
+    "color",
+    "colour",
+    "text",
+    "math",
+    "sys",
+    "flags",
+    "tty",
+}
+
+AUTO_LIB_VALUES = {
+    "time",
+    "date",
+    "hour",
+    "minute",
+    "second",
+    "year",
+    "month",
+    "day",
+    "weekday",
+    "cwd",
+    "os",
+}
 
 _FG_COLORS: dict[str, str] = {
     "black": "30",
@@ -98,6 +132,72 @@ _TEXT_STYLES: dict[str, str] = {
     "underline": "4",
 }
 
+_ASCII_FONT_5: dict[str, tuple[str, ...]] = {
+    "0": ("███", "█ █", "█ █", "█ █", "███"),
+    "1": (" ██", "  █", "  █", "  █", "███"),
+    "2": ("███", "  █", "███", "█  ", "███"),
+    "3": ("███", "  █", "███", "  █", "███"),
+    "4": ("█ █", "█ █", "███", "  █", "  █"),
+    "5": ("███", "█  ", "███", "  █", "███"),
+    "6": ("███", "█  ", "███", "█ █", "███"),
+    "7": ("███", "  █", "  █", "  █", "  █"),
+    "8": ("███", "█ █", "███", "█ █", "███"),
+    "9": ("███", "█ █", "███", "  █", "███"),
+    ":": (" ", "█", " ", "█", " "),
+    "-": ("   ", "   ", "███", "   ", "   "),
+    "/": ("  █", "  █", " █ ", "█  ", "█  "),
+    ".": (" ", " ", " ", " ", "█"),
+    ",": ("  ", "  ", "  ", " █", "█ "),
+    "!": ("█", "█", "█", " ", "█"),
+    "?": ("███", "  █", " ██", "   ", " █ "),
+    " ": ("  ", "  ", "  ", "  ", "  "),
+    "A": ("███", "█ █", "███", "█ █", "█ █"),
+    "B": ("██ ", "█ █", "██ ", "█ █", "██ "),
+    "C": ("███", "█  ", "█  ", "█  ", "███"),
+    "D": ("██ ", "█ █", "█ █", "█ █", "██ "),
+    "E": ("███", "█  ", "██ ", "█  ", "███"),
+    "F": ("███", "█  ", "██ ", "█  ", "█  "),
+    "G": ("███", "█  ", "█ █", "█ █", "███"),
+    "H": ("█ █", "█ █", "███", "█ █", "█ █"),
+    "I": ("███", " █ ", " █ ", " █ ", "███"),
+    "J": ("  █", "  █", "  █", "█ █", "███"),
+    "K": ("█ █", "█ █", "██ ", "█ █", "█ █"),
+    "L": ("█  ", "█  ", "█  ", "█  ", "███"),
+    "M": ("█   █", "██ ██", "█ █ █", "█   █", "█   █"),
+    "N": ("█  █", "██ █", "█ ██", "█  █", "█  █"),
+    "O": ("███", "█ █", "█ █", "█ █", "███"),
+    "P": ("███", "█ █", "███", "█  ", "█  "),
+    "Q": ("███", "█ █", "█ █", "███", "  █"),
+    "R": ("██ ", "█ █", "██ ", "█ █", "█ █"),
+    "S": ("███", "█  ", "███", "  █", "███"),
+    "T": ("███", " █ ", " █ ", " █ ", " █ "),
+    "U": ("█ █", "█ █", "█ █", "█ █", "███"),
+    "V": ("█ █", "█ █", "█ █", "█ █", " █ "),
+    "W": ("█   █", "█   █", "█ █ █", "██ ██", "█   █"),
+    "X": ("█ █", "█ █", " █ ", "█ █", "█ █"),
+    "Y": ("█ █", "█ █", " █ ", " █ ", " █ "),
+    "Z": ("███", "  █", " █ ", "█  ", "███"),
+}
+
+_ASCII_FONT_3: dict[str, tuple[str, ...]] = {
+    "0": ("▄▀▄", "█ █", "▀▄▀"),
+    "1": ("▄█ ", " █ ", "▄█▄"),
+    "2": ("▀▀█", "▄▀ ", "█▄▄"),
+    "3": ("▀▀█", " ▀▄", "▄▄▀"),
+    "4": ("█ █", "▀▀█", "  █"),
+    "5": ("█▀▀", "▀▀▄", "▄▄▀"),
+    "6": ("▄▀ ", "█▀▄", "▀▄▀"),
+    "7": ("▀▀█", "  █", "  █"),
+    "8": ("▄▀▄", "█▀█", "▀▄▀"),
+    "9": ("▄▀▄", "▀▀█", " ▄▀"),
+    ":": (" ", "▄", "▀"),
+    "-": ("  ", "▀▀", "  "),
+    " ": (" ", " ", " "),
+    "A": ("▄▀▄", "█▀█", "█ █"),
+    "P": ("█▀▄", "█▀ ", "█  "),
+    "M": ("█▄█", "█▀█", "█ █"),
+}
+
 
 def _enable_windows_ansi() -> None:
     """Best-effort enablement of ANSI VT100 escapes on Windows terminals."""
@@ -116,6 +216,322 @@ def _enable_windows_ansi() -> None:
             kernel32.SetConsoleMode(handle, mode.value | 0x0004)
     except Exception:
         pass
+
+
+def say_set_cli_args(args: list[str]) -> None:
+    """Store CLI arguments forwarded to the SayLang program."""
+    global _CLI_ARGS
+    _CLI_ARGS = list(args)
+
+
+def say_get_flag(name: str) -> object:
+    """Read a CLI flag (`-d`, `--12h`, `--size`) from program arguments."""
+    args = sys.argv[1:] if _CLI_ARGS is None else _CLI_ARGS
+    prefix = f"{name}="
+    for idx, arg in enumerate(args):
+        if arg == name:
+            if idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+                return args[idx + 1]
+            return True
+        if arg.startswith(prefix):
+            return arg[len(prefix) :]
+    return False
+
+
+def say_import_modules(names: list[str]) -> None:
+    """Validate prebuilt SayLang library imports."""
+    for mod in names:
+        key = mod.strip().lower()
+        if key not in _PREBUILT_LIBS:
+            available = ", ".join(sorted(_PREBUILT_LIBS))
+            raise SayRuntimeError(
+                f"Unknown prebuilt library '{mod}'. Available libraries: {available}."
+            )
+
+
+def say_clear_screen(stdout: object = None) -> None:
+    """Clear the terminal screen."""
+    _enable_windows_ansi()
+    out = stdout if stdout is not None else sys.stdout
+    out.write("\x1b[2J\x1b[H")  # type: ignore[attr-defined]
+    flush = getattr(out, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def say_sleep(seconds: object) -> None:
+    """Pause execution for `seconds`."""
+    if not _is_number(seconds):
+        raise SayRuntimeError(
+            f"Wait duration must be a number, got {say_type_of(seconds)}."
+        )
+    if float(seconds) < 0:  # type: ignore[arg-type]
+        raise SayRuntimeError("Wait duration cannot be negative.")
+    _time.sleep(float(seconds))  # type: ignore[arg-type]
+
+
+def _visible_width(text: str) -> int:
+    clean = _ANSI_STRIP_RE.sub("", text)
+    lines = clean.splitlines()
+    return max((len(line) for line in lines), default=0)
+
+
+def say_record_print(text: str) -> None:
+    """Record the visible width of the most recently printed block."""
+    global _LAST_PRINT_WIDTH
+    _LAST_PRINT_WIDTH = _visible_width(text)
+
+
+def say_format_layout(text: str, position: str | None = None) -> str:
+    """Align text `below` the previous block or `centered` in the terminal."""
+    if position is None:
+        return text
+    lines = text.splitlines()
+    if not lines:
+        return text
+    if position == "below":
+        target = _LAST_PRINT_WIDTH
+        if target <= _visible_width(text):
+            return text
+    elif position == "centered":
+        target = shutil.get_terminal_size((80, 24)).columns
+    else:
+        return text
+
+    padded: list[str] = []
+    for line in lines:
+        vis = _visible_width(line)
+        if vis < target:
+            left_pad = (target - vis) // 2
+            padded.append((" " * left_pad) + line)
+        else:
+            padded.append(line)
+    return "\n".join(padded)
+
+
+def say_ascii_art(value: object, size: object = "default") -> str:
+    """Render text as multi-line big block letters."""
+    text = say_to_text(value)
+    size_key = str(size).strip().lower()
+    if size_key not in ("small", "default", "big"):
+        raise SayRuntimeError(
+            f"Unknown ascii --size '{size}'. Choose: small, default, big."
+        )
+
+    upper = text.upper()
+    if size_key == "small":
+        rows = ["", "", ""]
+        for ch in upper:
+            glyph = _ASCII_FONT_3.get(ch)
+            if glyph is None:
+                fallback = _ASCII_FONT_5.get(ch, ("  ", "  ", "  ", "  ", "  "))
+                glyph = (fallback[0], fallback[2], fallback[4])
+            for r in range(3):
+                rows[r] += glyph[r] + " "
+        return "\n".join(row.rstrip() for row in rows)
+
+    rows5 = ["", "", "", "", ""]
+    for ch in upper:
+        glyph5 = _ASCII_FONT_5.get(ch, ("  ", "  ", "  ", "  ", "  "))
+        for r in range(5):
+            rows5[r] += glyph5[r] + " "
+    lines5 = [row.rstrip() for row in rows5]
+
+    if size_key == "default":
+        return "\n".join(lines5)
+
+    # big: 2x wider + 7 rows tall
+    widened = ["".join(ch * 2 for ch in line) for line in lines5]
+    return "\n".join(
+        [
+            widened[0],
+            widened[0],
+            widened[1],
+            widened[2],
+            widened[3],
+            widened[4],
+            widened[4],
+        ]
+    )
+
+
+def say_box(value: object, title: object = None) -> str:
+    """Wrap text in a clean rounded Unicode border box."""
+    lines = say_to_text(value).splitlines() or [""]
+    width = max(_visible_width(line) for line in lines)
+    if title is not None:
+        title_str = f" {say_to_text(title)} "
+        width = max(width, len(title_str))
+        top = "╭" + title_str + "─" * max(width + 2 - len(title_str), 0) + "╮"
+    else:
+        top = "╭" + "─" * (width + 2) + "╮"
+    bottom = "╰" + "─" * (width + 2) + "╯"
+    body = [f"│ {line}{' ' * (width - _visible_width(line))} │" for line in lines]
+    return "\n".join([top, *body, bottom])
+
+
+def say_center(value: object, width: object = None) -> str:
+    """Center text horizontally."""
+    target = (
+        int(width)
+        if width is not None and _is_number(width)
+        else shutil.get_terminal_size((80, 24)).columns
+    )
+    lines = say_to_text(value).splitlines() or [""]
+    out: list[str] = []
+    for line in lines:
+        vis = _visible_width(line)
+        pad = max((target - vis) // 2, 0)
+        out.append((" " * pad) + line)
+    return "\n".join(out)
+
+
+def _flag_enabled(options: dict[str, object], *keys: str) -> bool:
+    for key in keys:
+        if key in options and say_is_truthy(options[key]):
+            return True
+    return False
+
+
+def say_lib_time(options: dict[str, object] | None = None) -> str:
+    """Return formatted current local time."""
+    opts = options or {}
+    now = datetime.datetime.now()
+    if "format" in opts and isinstance(opts["format"], str):
+        return now.strftime(opts["format"])
+    no_sec = _flag_enabled(opts, "no-seconds", "short")
+    if _flag_enabled(opts, "12h", "12"):
+        return now.strftime("%I:%M %p" if no_sec else "%I:%M:%S %p")
+    return now.strftime("%H:%M" if no_sec else "%H:%M:%S")
+
+
+def say_lib_date(options: dict[str, object] | None = None) -> str:
+    """Return formatted current local date."""
+    opts = options or {}
+    now = datetime.datetime.now()
+    if "format" in opts and isinstance(opts["format"], str):
+        return now.strftime(opts["format"])
+    if _flag_enabled(opts, "iso"):
+        return now.strftime("%Y-%m-%d")
+    if _flag_enabled(opts, "short"):
+        return now.strftime("%d/%m/%Y")
+    if _flag_enabled(opts, "long"):
+        return now.strftime("%A, %B %d, %Y")
+    return now.strftime("%a, %b %d %Y")
+
+
+def say_lib_call(
+    name: str,
+    args: list[object] | None = None,
+    options: dict[str, object] | None = None,
+) -> object:
+    """Invoke a prebuilt SayLang standard library command."""
+    key = name.strip().lower()
+    arg_list = args or []
+    opts = options or {}
+    now = datetime.datetime.now()
+
+    if key == "time":
+        return say_lib_time(opts)
+    if key == "date":
+        return say_lib_date(opts)
+    if key == "hour":
+        return now.hour
+    if key == "minute":
+        return now.minute
+    if key == "second":
+        return now.second
+    if key == "year":
+        return now.year
+    if key == "month":
+        return now.month
+    if key == "day":
+        return now.day
+    if key == "weekday":
+        return now.strftime("%A")
+    if key == "cwd":
+        return os.getcwd()
+    if key == "os":
+        return sys.platform
+    if key == "env":
+        if not arg_list:
+            raise SayRuntimeError("env expects a variable name.")
+        return os.environ.get(say_to_text(arg_list[0]), "")
+    if key == "ascii":
+        val = arg_list[0] if arg_list else ""
+        return say_ascii_art(val, opts.get("size", "default"))
+    if key == "box":
+        val = arg_list[0] if arg_list else ""
+        return say_box(val, opts.get("title"))
+    if key == "center":
+        val = arg_list[0] if arg_list else ""
+        return say_center(val, opts.get("width"))
+    if key in ("sum", "min", "max", "average"):
+        items = arg_list[0] if len(arg_list) == 1 and isinstance(arg_list[0], list) else arg_list
+        if not isinstance(items, list) or not items:
+            raise SayRuntimeError(f"{key} expects a non-empty list of numbers.")
+        if key == "sum":
+            return sum(items)  # type: ignore[arg-type]
+        if key == "min":
+            return min(items)  # type: ignore[type-var]
+        if key == "max":
+            return max(items)  # type: ignore[type-var]
+        return sum(items) / len(items)  # type: ignore[arg-type]
+
+    raise SayRuntimeError(f"Unknown standard library command '{name}'.")
+
+
+def say_pipe(
+    value: object,
+    stage_name: str,
+    args: list[object] | None = None,
+    options: dict[str, object] | None = None,
+    user_fn: object = None,
+) -> object:
+    """Apply a `|` pipe stage to a value."""
+    if callable(user_fn):
+        return user_fn(value, *(args or []))
+
+    key = stage_name.strip().lower()
+    arg_list = args or []
+    opts = options or {}
+
+    if key == "ascii":
+        return say_ascii_art(value, opts.get("size", "default"))
+    if key == "box":
+        title = arg_list[0] if arg_list else opts.get("title")
+        return say_box(value, title)
+    if key in ("center", "centred", "centered"):
+        width = arg_list[0] if arg_list else opts.get("width")
+        return say_center(value, width)
+    if key in ("colour", "color"):
+        color = arg_list[0] if arg_list else opts.get("colour") or opts.get("color")
+        bg = opts.get("on") or opts.get("background")
+        styles = [str(s) for s in arg_list[1:]] if len(arg_list) > 1 else None
+        return say_style_text(say_to_text(value), color=color, background=bg, styles=styles)
+    if key in ("upper", "uppercase"):
+        return say_uppercase(say_to_text(value))
+    if key in ("lower", "lowercase"):
+        return say_lowercase(say_to_text(value))
+    if key in ("trim", "trimmed"):
+        return say_trimmed(say_to_text(value))
+    if key in ("reverse", "reversed"):
+        return say_reversed(value)
+    if key in ("sort", "sorted"):
+        return say_sorted(value)
+    if key in ("length", "count"):
+        return say_length(value)
+    if key == "words":
+        return say_words(say_to_text(value))
+    if key == "lines":
+        return say_lines(say_to_text(value))
+    if key in ("join", "joined"):
+        sep = arg_list[0] if arg_list else opts.get("with", ", ")
+        return say_joined(value, sep)
+    if key in ("sum", "min", "max", "average"):
+        return say_lib_call(key, [value], opts)
+
+    raise SayRuntimeError(f"Unknown pipe stage '{stage_name}'.")
 
 
 def say_style_text(

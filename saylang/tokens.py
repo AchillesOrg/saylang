@@ -11,6 +11,8 @@ class TokenType(Enum):
     NUMBER = auto()
     STRING = auto()
     POSSESSIVE = auto()
+    FLAG = auto()
+    PIPE = auto()
     COMMA = auto()
     COLON = auto()
     LPAREN = auto()

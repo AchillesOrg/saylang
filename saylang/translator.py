@@ -17,11 +17,13 @@ from saylang.ast_nodes import (
     FuncDefStmt,
     Program,
     RepeatStmt,
+    SayStmt,
     SetStmt,
     Var,
 )
 from saylang.errors import SayError, SayTranslateError
 from saylang.parser import parse_source
+from saylang.runtime import AUTO_LIB_VALUES
 
 _SAYLANG_GRAMMAR_GUIDE = """You translate everyday English instructions into SayLang (.pl), a deterministic plain-English programming language.
 
@@ -31,10 +33,16 @@ Rules of SayLang:
 - Comments: `# comment` or `note comment`
 - Variables: `set name to value` or `let name be value`
 - Mutation: `increase x by 5`, `decrease x by 1`
-- Output: `say "Hello, ", name`
+- Output: `say "Hello, ", name` or `print "Hello, ", name`
 - Colored/styled output: `say "hello world lol" colour red`, `say "OK" color green bold`, `say "Alert" colour white on red underline`
+- Prebuilt auto-imported libraries (`time`, `ascii`, `color`, `text`, `math`, `sys`, `flags`, `tty`):
+  - `import time, ascii` (optional — libraries also auto-import)
+  - `time`, `time --12h`, `date`, `date --iso`, `hour`, `minute`, `second`, `weekday`
+  - Pipes: `print time --12h | ascii --size default`, `say "hi" | box | colour cyan`
+  - Layout: `print date below time`, `say "Title" centered`, `clear screen`, `wait 1 second`, `every 1 second`
+- CLI script flags: `flags: -d`, `if flag -d then print date below time`
 - Input: `set name to ask "What is your name? "`
-- Conditionals: `if ...`, `otherwise if ...`, `otherwise`
+- Conditionals: `if ...`, `otherwise if ...`, `otherwise` (or inline `if ... then ...`)
 - Comparisons: `is`, `is not`, `is greater than`, `is less than`, `is at least`, `is at most`, `contains`, `does not contain`, `is in`, `starts with`, `ends with`
 - Logic: `and`, `or`, `not`
 - Math: `plus`, `minus`, `times`, `divided by`, `whole divided by`, `modulo`, `to the power of`, `negative`
@@ -60,6 +68,7 @@ Rules of SayLang:
 - Files:
   - `write text to file "out.txt"`, `append text to file "out.txt"`, `read file "out.txt"`
 
+Never reference undefined variables: use built-in `time`/`hour`/`minute`/`date` for clock queries, or initialize variables first, and `say`/`print` the result so the snippet runs cleanly.
 Output ONLY valid SayLang source code. Do not include markdown fences or explanations."""
 
 _KNOWN_COLORS_PATTERN = (
@@ -397,6 +406,7 @@ def _format_say_arg(
     if (
         re.fullmatch(r"[A-Za-z_]\w*", norm)
         and norm.lower() not in ("true", "false", "yes", "no", "nothing")
+        and norm.lower() not in AUTO_LIB_VALUES
         and norm not in defined_vars
     ):
         return f'"{norm}"'
@@ -462,6 +472,16 @@ def _record_defined_vars(program: Program, defined_vars: set[str]) -> None:
             defined_vars.add(stmt.var_name)
 
 
+def _is_unquoted_undefined_say(prog: Program, defined_vars: set[str]) -> bool:
+    if len(prog.statements) != 1 or not isinstance(prog.statements[0], SayStmt):
+        return False
+    say_stmt = prog.statements[0]
+    if len(say_stmt.values) != 1 or not isinstance(say_stmt.values[0], Var):
+        return False
+    name = say_stmt.values[0].name
+    return name not in defined_vars and name.lower() not in AUTO_LIB_VALUES
+
+
 def _translate_single_clause(
     clause: str,
     strings: list[str],
@@ -485,16 +505,18 @@ def _translate_single_clause(
 
     try:
         prog = parse_source(restored_raw)
-        _record_defined_vars(prog, defined_vars)
-        return [f"{indent}{restored_raw}"]
+        if not _is_unquoted_undefined_say(prog, defined_vars):
+            _record_defined_vars(prog, defined_vars)
+            return [f"{indent}{restored_raw}"]
     except SayError:
         pass
 
     norm_full = _normalize_expr(raw, strings)
     try:
         prog = parse_source(norm_full)
-        _record_defined_vars(prog, defined_vars)
-        return [f"{indent}{norm_full}"]
+        if not _is_unquoted_undefined_say(prog, defined_vars):
+            _record_defined_vars(prog, defined_vars)
+            return [f"{indent}{norm_full}"]
     except SayError:
         pass
 
@@ -791,6 +813,7 @@ def translate_english(
     model: str | None = None,
     api_key: str | None = None,
     max_retries: int = 2,
+    context_vars: list[str] | None = None,
 ) -> TranslationResult:
     """Translate loose everyday English into validated SayLang source code."""
     backend, resolved_key = _detect_provider(provider, api_key)
@@ -804,7 +827,14 @@ def translate_english(
 
     assert resolved_key is not None
     notes: list[str] = []
-    prompt = f"Translate the following instructions into SayLang:\n\n{text.strip()}"
+    ctx_note = (
+        f"\n\nCurrently defined variables in this session: {', '.join(context_vars)}"
+        if context_vars
+        else ""
+    )
+    prompt = (
+        f"Translate the following instructions into SayLang:{ctx_note}\n\n{text.strip()}"
+    )
     last_error: SayError | None = None
 
     for attempt in range(max_retries + 1):

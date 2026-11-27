@@ -9,21 +9,28 @@ from saylang.ast_nodes import (
     BuiltinExpr,
     CallExpr,
     ChangeStmt,
+    ClearScreenStmt,
     CompareOp,
     EntryAccess,
+    EveryStmt,
     Expr,
     ExprStmt,
     FailStmt,
     FieldAccess,
+    FlagExpr,
+    FlagsDeclStmt,
     ForEachStmt,
     ForRangeStmt,
     FuncDefStmt,
     IfBranch,
     IfStmt,
+    ImportStmt,
     ItemAccess,
+    LibCallExpr,
     ListLiteral,
     Literal,
     MapLiteral,
+    PipeExpr,
     Program,
     ReadFileExpr,
     RemoveStmt,
@@ -37,6 +44,7 @@ from saylang.ast_nodes import (
     TryStmt,
     UnaryOp,
     Var,
+    WaitStmt,
     WhileStmt,
     WriteFileStmt,
 )
@@ -113,6 +121,56 @@ _COLOR_NAMES = {
 
 _STYLE_WORDS = {"bold", "dim", "italic", "underline"}
 
+_LIB_COMMANDS = {
+    "time",
+    "date",
+    "ascii",
+    "box",
+    "center",
+    "env",
+    "sum",
+    "min",
+    "max",
+    "average",
+}
+
+_CURRENT_TIME_ATTRS = {
+    "time",
+    "date",
+    "hour",
+    "minute",
+    "second",
+    "year",
+    "month",
+    "day",
+    "weekday",
+}
+
+_FLAG_VALUE_STOP_WORDS = {
+    "then",
+    "otherwise",
+    "else",
+    "and",
+    "or",
+    "is",
+    "below",
+    "centered",
+    "centred",
+    "colour",
+    "color",
+    "on",
+    "background",
+    "bold",
+    "dim",
+    "italic",
+    "underline",
+    "in",
+    "to",
+    "from",
+    "by",
+    "as",
+}
+
 
 class Parser:
     """Recursive-descent parser producing a SayLang AST."""
@@ -121,6 +179,7 @@ class Parser:
         self.tokens = tokens
         self.source_lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         self.pos = 0
+        self._inline_if_depth = 0
 
     def _source_line(self, line: int) -> str:
         if 1 <= line <= len(self.source_lines):
@@ -184,6 +243,10 @@ class Parser:
             return
         if tok.type in (TokenType.EOF, TokenType.DEDENT):
             return
+        if self._inline_if_depth > 0 and (
+            self._at_word("otherwise") or self._at_word("else")
+        ):
+            return
         raise self._error(
             f"Unexpected '{tok.value}' at the end of the line.", tok
         )
@@ -229,13 +292,23 @@ class Parser:
         tok = self._peek()
         if tok.type == TokenType.WORD:
             w = tok.lower
+            if w in ("import", "use"):
+                return self._parse_import()
+            if w == "flags":
+                return self._parse_flags_decl()
+            if w == "clear":
+                return self._parse_clear()
+            if w in ("wait", "sleep"):
+                return self._parse_wait()
+            if w == "every":
+                return self._parse_every()
             if w == "set":
                 return self._parse_set()
             if w == "let":
                 return self._parse_let()
             if w in ("increase", "decrease"):
                 return self._parse_change(w)
-            if w == "say":
+            if w in ("say", "print"):
                 return self._parse_say()
             if w == "if":
                 return self._parse_if()
@@ -271,6 +344,7 @@ class Parser:
                 next_tok = self._peek(1)
                 if next_tok.type == TokenType.WORD and next_tok.lower in {
                     "say",
+                    "print",
                     "set",
                     "let",
                     "increase",
@@ -279,6 +353,10 @@ class Parser:
                     "append",
                     "remove",
                     "write",
+                    "clear",
+                    "wait",
+                    "sleep",
+                    "import",
                 }:
                     self._advance()
                     return self._parse_statement()
@@ -289,6 +367,75 @@ class Parser:
         expr = self._parse_expr()
         self._expect_end_of_statement()
         return ExprStmt(line=tok.line, column=tok.column, expr=expr)
+
+    def _parse_import(self) -> ImportStmt:
+        tok = self._advance()
+        modules = [str(self._consume_ident("a library name").value)]
+        while True:
+            if self._peek().type == TokenType.COMMA:
+                self._advance()
+                if self._at_word("and"):
+                    self._advance()
+                modules.append(str(self._consume_ident("a library name").value))
+            elif self._at_word("and"):
+                self._advance()
+                modules.append(str(self._consume_ident("a library name").value))
+            else:
+                break
+        self._expect_end_of_statement()
+        return ImportStmt(line=tok.line, column=tok.column, modules=modules)
+
+    def _parse_single_flag_name(self) -> str:
+        tok = self._peek()
+        if tok.type == TokenType.FLAG:
+            self._advance()
+            return str(tok.value)
+        if tok.type == TokenType.MINUS and self._peek(1).type == TokenType.WORD:
+            self._advance()
+            w = self._advance()
+            return f"-{w.value}"
+        raise self._error("Expected a flag like '-d' or '--12h'.")
+
+    def _parse_flags_decl(self) -> FlagsDeclStmt:
+        tok = self._advance()
+        if self._peek().type == TokenType.COLON:
+            self._advance()
+        flags = [self._parse_single_flag_name()]
+        while self._peek().type == TokenType.COMMA or self._at_word("and"):
+            if self._peek().type == TokenType.COMMA:
+                self._advance()
+                if self._at_word("and"):
+                    self._advance()
+            else:
+                self._advance()
+            flags.append(self._parse_single_flag_name())
+        self._expect_end_of_statement()
+        return FlagsDeclStmt(line=tok.line, column=tok.column, flags=flags)
+
+    def _parse_clear(self) -> ClearScreenStmt:
+        tok = self._advance()
+        if self._at_word("screen"):
+            self._advance()
+        self._expect_end_of_statement()
+        return ClearScreenStmt(line=tok.line, column=tok.column)
+
+    def _parse_wait(self) -> WaitStmt:
+        tok = self._advance()
+        seconds = self._parse_expr()
+        if self._at_word("second") or self._at_word("seconds"):
+            self._advance()
+        self._expect_end_of_statement()
+        return WaitStmt(line=tok.line, column=tok.column, seconds=seconds)
+
+    def _parse_every(self) -> EveryStmt:
+        tok = self._advance()
+        interval = self._parse_expr()
+        if self._at_word("second") or self._at_word("seconds"):
+            self._advance()
+        body = self._consume_block("every")
+        return EveryStmt(
+            line=tok.line, column=tok.column, interval=interval, body=body
+        )
 
     def _parse_target(self) -> Expr:
         """Parse an assignment target (var, item X of Y, entry X of Y, or X's Y)."""
@@ -410,11 +557,13 @@ class Parser:
     def _parse_say(self) -> SayStmt:
         tok = self._advance()
         if self._peek().type in (TokenType.NEWLINE, TokenType.EOF, TokenType.DEDENT):
-            raise self._error("Expected something to say after 'say'.", tok)
+            raise self._error(f"Expected something to say after '{tok.lower}'.", tok)
         values = self._parse_comma_list()
         color: Expr | None = None
         background: Expr | None = None
         styles: list[str] = []
+        position: str | None = None
+        anchor: str | None = None
 
         while self._peek().type == TokenType.WORD:
             w = self._peek().lower
@@ -449,6 +598,20 @@ class Parser:
                 if w not in styles:
                     styles.append(w)
                 continue
+            if w == "below":
+                self._advance()
+                position = "below"
+                nxt = self._peek()
+                if nxt.type == TokenType.WORD and nxt.lower not in (
+                    _STYLE_WORDS
+                    | {"colour", "color", "in", "on", "background", "otherwise", "else"}
+                ):
+                    anchor = str(self._advance().value)
+                continue
+            if w in ("centered", "centred"):
+                self._advance()
+                position = "centered"
+                continue
             break
 
         self._expect_end_of_statement()
@@ -459,18 +622,48 @@ class Parser:
             color=color,
             background=background,
             styles=styles,
+            position=position,
+            anchor=anchor,
         )
 
     def _parse_if(self) -> IfStmt:
         tok = self._advance()
         cond = self._parse_expr()
+
+        if self._at_word("then"):
+            self._advance()
+            self._inline_if_depth += 1
+            try:
+                then_stmt = self._parse_statement()
+            finally:
+                self._inline_if_depth -= 1
+            else_body: list[Stmt] = []
+            if self._at_word("otherwise") or self._at_word("else"):
+                self._advance()
+                if self._at_word("then"):
+                    self._advance()
+                else_body = [self._parse_statement()]
+            return IfStmt(
+                line=tok.line,
+                column=tok.column,
+                branches=[
+                    IfBranch(
+                        condition=cond,
+                        body=[then_stmt],
+                        line=tok.line,
+                        column=tok.column,
+                    )
+                ],
+                else_body=else_body,
+            )
+
         body = self._consume_block("if")
         branches = [
             IfBranch(
                 condition=cond, body=body, line=tok.line, column=tok.column
             )
         ]
-        else_body: list[Stmt] = []
+        else_body = []
 
         while True:
             self._skip_newlines()
@@ -675,8 +868,114 @@ class Parser:
 
     # --- Expressions ---
 
+    def _parse_flag_options(self) -> dict[str, Expr]:
+        """Parse `--flag [value]` options into a dict."""
+        options: dict[str, Expr] = {}
+        while self._peek().type == TokenType.FLAG:
+            flag_tok = self._advance()
+            key = str(flag_tok.value).lstrip("-").lower()
+            nxt = self._peek()
+            if nxt.type in (TokenType.NUMBER, TokenType.STRING):
+                self._advance()
+                options[key] = Literal(line=nxt.line, column=nxt.column, value=nxt.value)
+            elif nxt.type == TokenType.LPAREN:
+                options[key] = self._parse_primary()
+            elif nxt.type == TokenType.WORD and nxt.lower not in _FLAG_VALUE_STOP_WORDS:
+                self._advance()
+                low = nxt.lower
+                if low in ("true", "yes"):
+                    val: object = True
+                elif low in ("false", "no"):
+                    val = False
+                else:
+                    val = str(nxt.value)
+                options[key] = Literal(line=nxt.line, column=nxt.column, value=val)
+            else:
+                options[key] = Literal(
+                    line=flag_tok.line, column=flag_tok.column, value=True
+                )
+        return options
+
     def _parse_expr(self) -> Expr:
-        return self._parse_or()
+        return self._parse_pipe()
+
+    def _parse_pipe(self) -> Expr:
+        left = self._parse_or()
+        while self._peek().type == TokenType.PIPE:
+            pipe_tok = self._advance()
+            stage_tok = self._consume_ident("a pipe command name")
+            stage_name = str(stage_tok.value)
+            stage_lower = stage_name.lower()
+            args: list[Expr] = []
+            options: dict[str, Expr] = {}
+
+            while self._peek().type not in (
+                TokenType.PIPE,
+                TokenType.NEWLINE,
+                TokenType.EOF,
+                TokenType.DEDENT,
+                TokenType.COMMA,
+                TokenType.RPAREN,
+            ):
+                nxt = self._peek()
+                if nxt.type == TokenType.WORD and nxt.lower in (
+                    "then",
+                    "otherwise",
+                    "else",
+                    "below",
+                    "centered",
+                    "centred",
+                ):
+                    break
+                if (
+                    stage_lower not in ("colour", "color")
+                    and nxt.type == TokenType.WORD
+                    and nxt.lower
+                    in (
+                        _STYLE_WORDS
+                        | {"colour", "color", "in", "on", "background"}
+                    )
+                ):
+                    break
+
+                if nxt.type == TokenType.FLAG:
+                    options.update(self._parse_flag_options())
+                    continue
+
+                if stage_lower in ("colour", "color"):
+                    if nxt.type == TokenType.WORD and nxt.lower in _STYLE_WORDS:
+                        self._advance()
+                        args.append(
+                            Literal(line=nxt.line, column=nxt.column, value=nxt.lower)
+                        )
+                        continue
+                    if nxt.type == TokenType.WORD and nxt.lower in ("on", "background"):
+                        self._advance()
+                        options["background"] = self._parse_color_expr()
+                        continue
+                    args.append(self._parse_color_expr())
+                    continue
+
+                if nxt.type in (TokenType.STRING, TokenType.NUMBER, TokenType.LPAREN):
+                    args.append(self._parse_primary())
+                    continue
+
+                if self._at_word("with"):
+                    self._advance()
+                    args.append(self._parse_or())
+                    continue
+
+                break
+
+            left = PipeExpr(
+                line=pipe_tok.line,
+                column=pipe_tok.column,
+                left=left,
+                stage_name=stage_name,
+                args=args,
+                options=options,
+            )
+        return left
 
     def _parse_or(self) -> Expr:
         left = self._parse_and()
@@ -843,6 +1142,44 @@ class Parser:
             self._advance()
             operand = self._parse_unary()
             return UnaryOp(line=tok.line, column=tok.column, op="neg", operand=operand)
+
+        if self._at_words("has", "flag"):
+            self._advance()
+            self._advance()
+            return FlagExpr(
+                line=tok.line, column=tok.column, name=self._parse_single_flag_name()
+            )
+        if self._at_word("flag") and (
+            self._peek(1).type == TokenType.FLAG
+            or (
+                self._peek(1).type == TokenType.MINUS
+                and self._peek(2).type == TokenType.WORD
+            )
+        ):
+            self._advance()
+            return FlagExpr(
+                line=tok.line, column=tok.column, name=self._parse_single_flag_name()
+            )
+
+        if (
+            self._at_word("current")
+            and self._peek(1).type == TokenType.WORD
+            and self._peek(1).lower in _CURRENT_TIME_ATTRS
+        ):
+            self._advance()
+            attr_tok = self._advance()
+            options = (
+                self._parse_flag_options()
+                if self._peek().type == TokenType.FLAG
+                else {}
+            )
+            return LibCallExpr(
+                line=tok.line,
+                column=tok.column,
+                name=attr_tok.lower,
+                args=[],
+                options=options,
+            )
 
         # Optional leading 'the' before English prefix operations.
         if self._at_word("the") and self._peek(1).lower in _UNARY_PHRASE_HEADS:
@@ -1113,6 +1450,17 @@ class Parser:
 
             if w == "call":
                 return self._parse_call_expr()
+
+            if w in _LIB_COMMANDS and self._peek(1).type == TokenType.FLAG:
+                self._advance()
+                options = self._parse_flag_options()
+                return LibCallExpr(
+                    line=tok.line,
+                    column=tok.column,
+                    name=w,
+                    args=[],
+                    options=options,
+                )
 
             if w == "the" and self._peek(1).type == TokenType.WORD:
                 self._advance()

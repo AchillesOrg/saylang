@@ -10,15 +10,17 @@ import tempfile
 from pathlib import Path
 
 from saylang import __version__
+from saylang.ast_nodes import FlagsDeclStmt
 from saylang.banner import render_startup_banner
 from saylang.errors import SayError
 from saylang.interpreter import run_source
+from saylang.nana import run_nana
 from saylang.parser import parse_source
 from saylang.repl import SayREPL
 from saylang.translator import translate_english
 from saylang.transpiler import compile_to_python
 
-_SUBCOMMANDS = {"run", "compile", "check", "ast", "english", "repl", "banner"}
+_SUBCOMMANDS = {"run", "compile", "check", "ast", "english", "repl", "banner", "nana"}
 
 
 def _read_source(path_str: str) -> str:
@@ -41,6 +43,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser("run", help="Run a .pl SayLang source file.")
     p_run.add_argument("file", help="Path to the .pl file")
+    p_run.add_argument(
+        "script_args", nargs=argparse.REMAINDER, help="Flags forwarded to the script"
+    )
 
     p_compile = sub.add_parser("compile", help="Transpile a .pl file to Python.")
     p_compile.add_argument("file", help="Path to the .pl file")
@@ -82,18 +87,45 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print compiled Python instead of SayLang",
     )
 
+    p_nana = sub.add_parser(
+        "nana", help="Open the built-in SayLang text editor (nana)."
+    )
+    p_nana.add_argument("file", nargs="?", help="Optional .pl file to edit")
+
     sub.add_parser("repl", help="Start the interactive SayLang REPL.")
     sub.add_parser("banner", help="Print the SayLang startup icon banner.")
     return parser
+
+
+def _print_script_flag_help(file_path: str, source: str) -> bool:
+    """If the script declares `flags:`, print flag usage and return True."""
+    program = parse_source(source)
+    declared: list[str] = []
+    for stmt in program.statements:
+        if isinstance(stmt, FlagsDeclStmt):
+            declared.extend(stmt.flags)
+    if not declared:
+        return False
+    print(f"Usage: saylang {file_path} [{' '.join(declared)}]")
+    print("Declared flags:")
+    for f in declared:
+        print(f"  {f}")
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
     raw_args = list(sys.argv[1:] if argv is None else argv)
 
-    # Shorthand: `saylang path/to/file.pl` -> `saylang run path/to/file.pl`
+    # Shorthand: `saylang path/to/file.pl [-d ...]` -> `saylang run path/to/file.pl [-d ...]`
     if raw_args and not raw_args[0].startswith("-") and raw_args[0] not in _SUBCOMMANDS:
         raw_args = ["run", *raw_args]
+
+    # Split forwarded script flags when running `saylang run <file.pl> [script_args...]`
+    forwarded_script_args: list[str] = []
+    if len(raw_args) >= 2 and raw_args[0] == "run" and not raw_args[1].startswith("-"):
+        forwarded_script_args = raw_args[2:]
+        raw_args = raw_args[:2]
 
     parser = _build_parser()
     args = parser.parse_args(raw_args)
@@ -106,10 +138,17 @@ def main(argv: list[str] | None = None) -> int:
         print(render_startup_banner(__version__, color=is_tty))
         return 0
 
+    if args.command == "nana":
+        return run_nana(args.file)
+
     try:
         if args.command == "run":
             source = _read_source(args.file)
-            run_source(source)
+            script_args = forwarded_script_args or list(getattr(args, "script_args", []))
+            if any(a in ("-h", "--help") for a in script_args):
+                if _print_script_flag_help(args.file, source):
+                    return 0
+            run_source(source, cli_args=script_args)
             return 0
 
         if args.command == "check":

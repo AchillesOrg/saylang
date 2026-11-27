@@ -131,6 +131,16 @@ def tokenize(source: str) -> list[Token]:
                 prev_token = tok
                 continue
 
+            if ch == "-" and pos + 2 < length and line[pos + 1] == "-" and line[pos + 2].isalnum():
+                start = pos
+                pos += 2
+                while pos < length and (line[pos].isalnum() or line[pos] in ("_", "-")):
+                    pos += 1
+                tok = Token(TokenType.FLAG, line[start:pos], line_no, col)
+                tokens.append(tok)
+                prev_token = tok
+                continue
+
             if ch.isdigit():
                 start = pos
                 has_dot = False
@@ -176,6 +186,7 @@ def tokenize(source: str) -> list[Token]:
                 continue
 
             single_char_tokens = {
+                "|": TokenType.PIPE,
                 ",": TokenType.COMMA,
                 ":": TokenType.COLON,
                 "(": TokenType.LPAREN,
