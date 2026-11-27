@@ -2,6 +2,44 @@
 set -eu
 
 REPO="AchillesOrg/saylang"
+RELEASES="https://github.com/${REPO}/releases"
+VERSION="${SAYLANG_VERSION:-latest}"
+
+usage() {
+  echo "Usage: sh install.sh [--version latest|VERSION]"
+}
+
+case "$#" in
+  0) ;;
+  1)
+    case "$1" in
+      -h|--help) usage; exit 0 ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    ;;
+  2)
+    if [ "$1" != "--version" ] || [ -z "$2" ]; then
+      usage >&2
+      exit 2
+    fi
+    VERSION="$2"
+    ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+if [ "$VERSION" = "latest" ]; then
+  BASE_URL="${RELEASES}/latest/download"
+else
+  if ! printf '%s\n' "$VERSION" | LC_ALL=C awk '
+    NR != 1 || $0 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$/ { invalid = 1 }
+    END { exit invalid }
+  '; then
+    echo "Invalid SayLang version '$VERSION'. Use 'latest' or a version such as 'v0.3.2'." >&2
+    exit 2
+  fi
+  BASE_URL="${RELEASES}/download/v${VERSION#v}"
+fi
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
@@ -28,32 +66,14 @@ else
 fi
 
 DEST="${DEST_DIR}/saylang"
-TMP="${DEST}.tmp.$$"
+TMP="$(mktemp "${DEST}.tmp.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
-
-TAG="${SAYLANG_VERSION:-}"
-if [ -z "$TAG" ]; then
-  TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1 || true)"
-fi
-
-if [ -n "$TAG" ]; then
-  BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
-else
-  BASE_URL="https://github.com/${REPO}/releases/latest/download"
-fi
 
 URL="${BASE_URL}/${ASSET}"
 echo "Downloading ${URL}..."
-if ! curl -fsSL "$URL" -o "$TMP"; then
-  if [ "$ASSET" = "saylang-macos-x64" ]; then
-    FALLBACK_URL="${BASE_URL}/saylang-macos-arm64"
-    echo "Trying ${FALLBACK_URL}..." >&2
-    curl -fsSL "$FALLBACK_URL" -o "$TMP"
-  else
-    echo "Failed to download prebuilt SayLang binary. You can install from source instead:" >&2
-    echo "  pip install git+https://github.com/${REPO}.git" >&2
-    exit 1
-  fi
+if ! curl -fsSL -H 'Cache-Control: no-cache' "$URL" -o "$TMP"; then
+  echo "Could not download ${ASSET} for '${VERSION}'. Check the published assets at ${RELEASES}." >&2
+  exit 1
 fi
 
 chmod +x "$TMP"

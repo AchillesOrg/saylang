@@ -1,30 +1,43 @@
+param(
+    [string]$Version = $env:SAYLANG_VERSION
+)
+
 $ErrorActionPreference = "Stop"
 
-$Repo = "AchillesOrg/saylang"
+$Releases = "https://github.com/AchillesOrg/saylang/releases"
+$Asset = "saylang-windows-x64.exe"
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\SayLang"
 $ExePath = Join-Path $InstallDir "saylang.exe"
-$TmpPath = "$ExePath.tmp"
+$TmpPath = "$ExePath.$([guid]::NewGuid()).tmp"
 
-$Tag = $env:SAYLANG_VERSION
-if ([string]::IsNullOrWhiteSpace($Tag)) {
-    try {
-        $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
-        $Tag = $Release.tag_name
-    } catch {
-        $Tag = ""
-    }
+if ([string]::IsNullOrEmpty($Version)) {
+    $Version = "latest"
 }
 
-if (-not [string]::IsNullOrWhiteSpace($Tag)) {
-    $Url = "https://github.com/$Repo/releases/download/$Tag/saylang-windows-x64.exe"
+if ($Version -ceq "latest") {
+    $Url = "$Releases/latest/download/$Asset"
 } else {
-    $Url = "https://github.com/$Repo/releases/latest/download/saylang-windows-x64.exe"
+    if ($Version -cnotmatch '\A(v?)([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?)\z') {
+        throw "Invalid SayLang version '$Version'. Use 'latest' or a version such as 'v0.3.2'."
+    }
+    $Tag = "v$($Matches[2])"
+    $Url = "$Releases/download/$Tag/$Asset"
 }
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Write-Host "Downloading $Url..."
-Invoke-WebRequest -Uri $Url -OutFile $TmpPath
-Move-Item -Force -Path $TmpPath -Destination $ExePath
+try {
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -Headers @{ "Cache-Control" = "no-cache" } -OutFile $TmpPath
+    } catch {
+        throw "Could not download $Asset for '$Version'. Check the published assets at ${Releases}. $($_.Exception.Message)"
+    }
+    Move-Item -Force -Path $TmpPath -Destination $ExePath
+} finally {
+    if (Test-Path -LiteralPath $TmpPath) {
+        Remove-Item -LiteralPath $TmpPath -Force
+    }
+}
 
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ([string]::IsNullOrEmpty($UserPath)) {

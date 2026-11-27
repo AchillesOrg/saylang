@@ -10,15 +10,29 @@ Repository: https://github.com/AchillesOrg/saylang
 
 ## Install
 
+The default installers resolve the latest published release on every run. To install a specific version, choose a tag from [GitHub Releases](https://github.com/AchillesOrg/saylang/releases) and pass it to the installer.
+
 **macOS:**
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AchillesOrg/saylang/main/install.sh | sh
+```
+
+For a specific release:
+```sh
+curl -fsSL https://raw.githubusercontent.com/AchillesOrg/saylang/main/install.sh | sh -s -- --version v0.3.2
 ```
 
 **Windows (PowerShell):**
 ```powershell
 irm https://raw.githubusercontent.com/AchillesOrg/saylang/main/install.ps1 | iex
 ```
+
+For a specific release:
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/AchillesOrg/saylang/main/install.ps1))) -Version v0.3.2
+```
+
+Both installers accept version numbers with or without the `v` prefix. You can also set `SAYLANG_VERSION` as a default for scripted installs. Pass `latest` explicitly to override that setting.
 
 **Python / From Source:**
 ```sh
