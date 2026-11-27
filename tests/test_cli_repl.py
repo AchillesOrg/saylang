@@ -3,11 +3,14 @@
 import contextlib
 import io
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from saylang import __version__
+from saylang.banner import render_startup_banner
 from saylang.cli import main
 from saylang.repl import SayREPL
 
@@ -94,10 +97,31 @@ class TestCLIAndREPL(unittest.TestCase):
             rc = repl.run()
         self.assertEqual(rc, 0)
         text = out.getvalue()
+        self.assertIn("Saylang", text)
+        self.assertIn(__version__, text)
         self.assertIn("10\n", text)
         self.assertIn("score = 10", text)
         self.assertIn("if say_is_truthy", text)
         self.assertIn("hello\n", text)
+
+    def test_startup_banner_alignment_and_cli_subcommand(self) -> None:
+        ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+        for unicode_ok in (True, False):
+            for color in (True, False):
+                rendered = render_startup_banner(
+                    __version__, color=color, unicode_ok=unicode_ok
+                )
+                lines = [ansi_re.sub("", ln) for ln in rendered.splitlines()]
+                self.assertGreaterEqual(len(lines), 5)
+                widths = {len(ln) for ln in lines}
+                self.assertEqual(len(widths), 1)
+                self.assertIn("Saylang", rendered)
+                self.assertIn(f"v{__version__}", rendered)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(main(["banner"]), 0)
+        self.assertIn("Saylang", buf.getvalue())
 
 
 if __name__ == "__main__":

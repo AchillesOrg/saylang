@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" width="1280" height="360">
+  <rect x="2" y="2" width="1276" height="356" rx="28" ry="28" fill="#FFFFFF" stroke="#E5E5E5" stroke-width="2"/>
+  <g transform="translate(275, 78) scale(0.2)">
+    <rect x="96" y="96" width="832" height="832" rx="215" ry="215" fill="#000000"/>
+    <path d="M 372 344 C 372 256, 228 256, 228 344 L 228 424 C 228 492, 372 516, 372 588 L 372 680 C 372 768, 228 768, 228 680" fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 440 752 L 512 272 L 584 752" fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 462 586 L 562 586" fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 652 272 L 724 522 L 796 272" fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 724 522 L 724 752" fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="530" y="236" fill="#000000" font-family="DIN Condensed, Avenir Next Condensed, Arial Narrow, sans-serif" font-size="168" font-weight="700" letter-spacing="6">Saylang</text>
+</svg>

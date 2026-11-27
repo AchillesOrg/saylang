@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from saylang import __version__
+from saylang.banner import render_startup_banner
 from saylang.errors import SayError
 from saylang.interpreter import run_source
 from saylang.parser import parse_source
@@ -17,7 +18,7 @@ from saylang.repl import SayREPL
 from saylang.translator import translate_english
 from saylang.transpiler import compile_to_python
 
-_SUBCOMMANDS = {"run", "compile", "check", "ast", "english", "repl"}
+_SUBCOMMANDS = {"run", "compile", "check", "ast", "english", "repl", "banner"}
 
 
 def _read_source(path_str: str) -> str:
@@ -82,6 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("repl", help="Start the interactive SayLang REPL.")
+    sub.add_parser("banner", help="Print the SayLang startup icon banner.")
     return parser
 
 
@@ -98,6 +100,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command is None or args.command == "repl":
         return SayREPL().run()
+
+    if args.command == "banner":
+        is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+        print(render_startup_banner(__version__, color=is_tty))
+        return 0
 
     try:
         if args.command == "run":

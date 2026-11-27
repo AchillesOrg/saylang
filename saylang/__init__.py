@@ -1,5 +1,6 @@
 """SayLang: a readable, bracket-free plain-English programming language."""
 
+from saylang.banner import render_startup_banner
 from saylang.errors import (
     SayError,
     SayLexError,
@@ -23,10 +24,11 @@ __all__ = [
     "TranslationResult",
     "compile_to_python",
     "parse_source",
+    "render_startup_banner",
     "run_program",
     "run_source",
     "tokenize",
     "translate_english",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

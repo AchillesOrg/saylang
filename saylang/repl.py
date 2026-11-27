@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import TextIO
 
 from saylang import __version__
+from saylang.banner import render_startup_banner
 from saylang.errors import SayError
 from saylang.interpreter import Interpreter
 from saylang.parser import parse_source
@@ -59,9 +60,17 @@ class SayREPL:
         *,
         stdout: TextIO | None = None,
         input_fn: Callable[[str], str] | None = None,
+        show_banner: bool = True,
+        color: bool | None = None,
     ) -> None:
         self.stdout = stdout if stdout is not None else sys.stdout
         self.input_fn = input_fn if input_fn is not None else input
+        self.show_banner = show_banner
+        self.color = (
+            bool(getattr(self.stdout, "isatty", lambda: False)())
+            if color is None
+            else color
+        )
         self.interpreter = Interpreter(stdout=self.stdout, input_fn=self.input_fn)
         self.last_source: str = ""
 
@@ -132,7 +141,10 @@ class SayREPL:
         except ImportError:
             pass
 
-        self._write(f"SayLang {__version__} — type :help for commands, :quit to exit.")
+        if self.show_banner:
+            self._write(render_startup_banner(__version__, color=self.color))
+        else:
+            self._write(f"SayLang {__version__} — type :help for commands, :quit to exit.")
         buffer: list[str] = []
         in_block = False
 

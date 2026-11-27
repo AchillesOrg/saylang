@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Saylang" width="760">
+</p>
+
 # SayLang
 
 **SayLang** (`saylang`, `.pl`) is a readable, bracket-free plain-English programming language implemented in Python (zero external runtime dependencies) and packaged as standalone **macOS** and **Windows** apps.

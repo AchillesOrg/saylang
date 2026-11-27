@@ -26,8 +26,11 @@ def main() -> int:
         "--noconfirm",
         "--add-data",
         add_data,
-        str(entrypoint),
     ]
+    ico_file = ROOT / "assets" / "icon.ico"
+    if sys.platform == "win32" and ico_file.is_file():
+        cmd.extend(["--icon", str(ico_file)])
+    cmd.append(str(entrypoint))
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, cwd=ROOT, check=True)
 
