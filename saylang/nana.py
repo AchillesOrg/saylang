@@ -34,6 +34,38 @@ _LIB_CLR = "\x1b[36m"
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
+def _parse_mouse_event(key: str) -> tuple[str, int, int] | None:
+    """Parse normalized SGR mouse event 'MOUSE:<KIND>:<row>:<col>' (1-based)."""
+    if not key.startswith("MOUSE:"):
+        return None
+    parts = key.split(":")
+    if len(parts) != 4:
+        return None
+    kind = parts[1]
+    if kind not in ("CLICK", "WHEEL_UP", "WHEEL_DOWN"):
+        return None
+    try:
+        return (kind, int(parts[2]), int(parts[3]))
+    except ValueError:
+        return None
+
+
+def _footer_shortcut_hit(
+    footer: str, col: int, mappings: list[tuple[str, str]]
+) -> str | None:
+    """Map a 1-based terminal column click on a footer bar to its shortcut key."""
+    if col < 1:
+        return None
+    for label, action_key in mappings:
+        idx = footer.find(label)
+        if idx >= 0:
+            start_col = idx + 1
+            end_col = start_col + len(label) - 1
+            if start_col <= col <= end_col:
+                return action_key
+    return None
+
+
 @dataclass(frozen=True)
 class NanaTemplate:
     """Starter SayLang template shown in the nana template picker."""
@@ -910,7 +942,7 @@ def render_welcome_menu(
     gap_top = max(cols - 16 - len(right_top), 1)
     header_bar = f" {_BOLD}NANA{_RESET} {_GRAY}· studio{_RESET}{' ' * gap_top}{_GRAY}{right_top}{_RESET}"
     hairline = f"{_GRAY}{'─' * cols}{_RESET}"
-    footer_bar = f" {_DIM}↑/↓ Move   Enter Select   1-9 Quick Pick   t Surface   Esc/q Quit{_RESET}"
+    footer_bar = f" {_DIM}↑/↓ Move   Enter/Click Select   1-9 Quick Pick   t Surface   Esc/q Quit{_RESET}"
 
     panel_w = min(cols - 4, 74) if cols >= 56 else cols - 2
     left_margin = " " * max((cols - panel_w) // 2, 1)
@@ -1158,7 +1190,20 @@ def _read_key() -> str:
                 return ch
             time.sleep(0.05)
 
+    import codecs
     import select
+
+    fd = sys.stdin.fileno()
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+
+    def read_fd_char() -> str:
+        while True:
+            raw_b = os.read(fd, 1)
+            if not raw_b:
+                return ""
+            decoded = decoder.decode(raw_b, final=False)
+            if decoded:
+                return decoded
 
     while True:
         if _SIGWINCH_FLAG:
@@ -1168,26 +1213,54 @@ def _read_key() -> str:
         if cur_size != last_size:
             return "RESIZE"
         try:
-            ready, _, _ = select.select([sys.stdin], [], [], 0.12)
+            ready, _, _ = select.select([fd], [], [], 0.12)
         except InterruptedError:
             _SIGWINCH_FLAG = False
             return "RESIZE"
         if not ready:
             continue
-        ch = sys.stdin.read(1)
+        ch = read_fd_char()
         if not ch:
             continue
         if ch == "\x1b":
-            if select.select([sys.stdin], [], [], 0.03)[0]:
-                nxt = sys.stdin.read(1)
+            if select.select([fd], [], [], 0.05)[0]:
+                nxt = read_fd_char()
                 if nxt == "[":
                     seq = ""
-                    while select.select([sys.stdin], [], [], 0.03)[0]:
-                        c = sys.stdin.read(1)
+                    while select.select([fd], [], [], 0.05)[0]:
+                        c = read_fd_char()
+                        if not c:
+                            break
                         seq += c
                         if c.isalpha() or c == "~":
                             break
-                    return {
+                    if seq == "M":
+                        for _ in range(3):
+                            if select.select([fd], [], [], 0.05)[0]:
+                                read_fd_char()
+                        return ""
+                    if seq.startswith("<") and len(seq) >= 5 and seq[-1] in ("M", "m"):
+                        body = seq[1:-1].split(";")
+                        if len(body) == 3:
+                            try:
+                                btn = int(body[0])
+                                col_m = int(body[1])
+                                row_m = int(body[2])
+                            except ValueError:
+                                return ""
+                            if seq[-1] == "m":
+                                return ""
+                            if (btn & 64) != 0:
+                                wheel = btn & 3
+                                if wheel == 0:
+                                    return f"MOUSE:WHEEL_UP:{row_m}:{col_m}"
+                                if wheel == 1:
+                                    return f"MOUSE:WHEEL_DOWN:{row_m}:{col_m}"
+                                return ""
+                            if (btn & 32) == 0 and (btn & 3) == 0:
+                                return f"MOUSE:CLICK:{row_m}:{col_m}"
+                        return ""
+                    exact = {
                         "A": "UP",
                         "B": "DOWN",
                         "C": "RIGHT",
@@ -1197,7 +1270,30 @@ def _read_key() -> str:
                         "1~": "HOME",
                         "4~": "END",
                         "3~": "DELETE",
-                    }.get(seq, "")
+                    }.get(seq)
+                    if exact:
+                        return exact
+                    if seq and seq[-1] in ("A", "B", "C", "D", "H", "F"):
+                        return {
+                            "A": "UP",
+                            "B": "DOWN",
+                            "C": "RIGHT",
+                            "D": "LEFT",
+                            "H": "HOME",
+                            "F": "END",
+                        }[seq[-1]]
+                    return ""
+                if nxt == "O":
+                    code = read_fd_char() if select.select([fd], [], [], 0.05)[0] else ""
+                    return {
+                        "A": "UP",
+                        "B": "DOWN",
+                        "C": "RIGHT",
+                        "D": "LEFT",
+                        "H": "HOME",
+                        "F": "END",
+                    }.get(code, "")
+                return ""
             return "ESC"
         return ch
 
@@ -1227,7 +1323,7 @@ def _prompt_bar(
         )
         sys.stdout.flush()
         key = _read_key()
-        if key == "RESIZE":
+        if not key or key == "RESIZE" or key.startswith("MOUSE:"):
             continue
         if key in ("\r", "\n"):
             return val.strip()
@@ -1259,16 +1355,28 @@ def _show_overlay(title: str, body: str, *, bg_mode: str = "mica") -> None:
         while len(screen) < rows - 2:
             screen.append("")
         hint = (
-            " ↑/↓ Scroll   Any other key to return... "
+            " ↑/↓ Scroll   Click/Any key to return... "
             if max_scroll > 0
-            else " Press any key to return... "
+            else " Click or press any key to return... "
         )
         screen.extend([hairline, f" {_DIM}{hint}{_RESET}"])
         sys.stdout.write(_compose_screen(screen, rows, cols, bg_mode=bg_mode))
         sys.stdout.flush()
         k = _read_key()
-        if k == "RESIZE":
+        if not k or k == "RESIZE":
             continue
+        mouse = _parse_mouse_event(k)
+        if mouse is not None:
+            mkind, _mr, _mc = mouse
+            if mkind == "WHEEL_UP":
+                if max_scroll > 0:
+                    scroll = max(scroll - 3, 0)
+                continue
+            if mkind == "WHEEL_DOWN":
+                if max_scroll > 0:
+                    scroll = min(scroll + 3, max_scroll)
+                continue
+            return
         if k == "UP" and max_scroll > 0:
             scroll = max(scroll - 1, 0)
             continue
@@ -1294,10 +1402,39 @@ def _select_template_tui(bg_state: list[str]) -> NanaBuffer | None:
     sel = 0
     while True:
         cols, rows = shutil.get_terminal_size((80, 24))
+        rows_e = max(rows, 10)
+        cols_e = max(cols, 36)
         sys.stdout.write(render_template_picker(sel, rows, cols, bg_mode=bg_state[0]))
         sys.stdout.flush()
         key = _read_key()
-        if key == "RESIZE":
+        if not key or key == "RESIZE":
+            continue
+        mouse = _parse_mouse_event(key)
+        if mouse is not None:
+            mkind, m_row, m_col = mouse
+            if mkind == "WHEEL_UP":
+                sel = (sel - 1) % len(NANA_TEMPLATES)
+                continue
+            if mkind == "WHEEL_DOWN":
+                sel = (sel + 1) % len(NANA_TEMPLATES)
+                continue
+            body_rows = rows_e - 4
+            if cols_e >= 72:
+                left_w = max(26, min(40, cols_e * 36 // 100))
+                cap = max(body_rows - 5, 3)
+                first_row = 6
+                in_col = m_col <= left_w
+            else:
+                cap = max(min(len(NANA_TEMPLATES), body_rows // 2), 2)
+                first_row = 3
+                in_col = True
+            scroll = max(0, sel - cap + 1)
+            if in_col and 0 <= m_row - first_row < cap:
+                idx = scroll + (m_row - first_row)
+                if 0 <= idx < len(NANA_TEMPLATES):
+                    if idx == sel:
+                        return NanaBuffer.from_template(NANA_TEMPLATES[idx])
+                    sel = idx
             continue
         if key == "t":
             bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
@@ -1321,12 +1458,45 @@ def _select_file_tui(bg_state: list[str]) -> NanaBuffer | None:
     total = len(files) + 1
     while True:
         cols, rows = shutil.get_terminal_size((80, 24))
+        rows_e = max(rows, 10)
+        cols_e = max(cols, 36)
         sys.stdout.write(
             render_file_picker(files, sel, rows, cols, root, bg_mode=bg_state[0])
         )
         sys.stdout.flush()
         key = _read_key()
-        if key == "RESIZE":
+        if not key or key == "RESIZE":
+            continue
+        mouse = _parse_mouse_event(key)
+        if mouse is not None:
+            mkind, m_row, m_col = mouse
+            if mkind == "WHEEL_UP":
+                sel = (sel - 1) % total
+                continue
+            if mkind == "WHEEL_DOWN":
+                sel = (sel + 1) % total
+                continue
+            body_rows = rows_e - 4
+            cap = max(body_rows - 4, 3)
+            if cols_e >= 72:
+                left_w = max(26, min(40, cols_e * 36 // 100))
+                first_row = 6
+                in_col = m_col <= left_w
+            else:
+                first_row = 3
+                in_col = True
+            scroll = max(0, sel - cap + 1)
+            if in_col and 0 <= m_row - first_row < cap:
+                idx = scroll + (m_row - first_row)
+                if 0 <= idx < total:
+                    if idx == sel:
+                        if idx < len(files):
+                            return NanaBuffer.from_file(str(files[idx]))
+                        custom = _prompt_bar("Open file path: ", bg_mode=bg_state[0])
+                        if custom:
+                            return NanaBuffer.from_file(custom)
+                    else:
+                        sel = idx
             continue
         if key == "t":
             bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
@@ -1358,6 +1528,7 @@ def _run_menu_tui(
         items = _welcome_items(active_buf is not None, bg_mode=bg_state[0])
         sel = max(0, min(sel, len(items) - 1))
         cols, rows = shutil.get_terminal_size((80, 24))
+        rows_e = max(rows, 10)
         sys.stdout.write(
             render_welcome_menu(
                 sel,
@@ -1369,14 +1540,33 @@ def _run_menu_tui(
         )
         sys.stdout.flush()
         key = _read_key()
-        if key == "RESIZE":
+        if not key or key == "RESIZE":
             continue
         if key == "t":
             bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
             continue
 
         chosen_action: str | None = None
-        if key == "UP":
+        mouse = _parse_mouse_event(key)
+        if mouse is not None:
+            mkind, m_row, _m_col = mouse
+            if mkind == "WHEEL_UP":
+                sel = (sel - 1) % len(items)
+                continue
+            if mkind == "WHEEL_DOWN":
+                sel = (sel + 1) % len(items)
+                continue
+            first_item_row = 10 if rows_e >= 22 else (9 if rows_e >= 18 else 5)
+            avail_rows = max(rows_e - 4 - (first_item_row - 3), 3)
+            scroll = sel - avail_rows + 1 if sel >= avail_rows else 0
+            if 0 <= m_row - first_item_row < avail_rows:
+                idx = scroll + (m_row - first_item_row)
+                if 0 <= idx < len(items):
+                    sel = idx
+                    chosen_action = items[idx][0]
+            if chosen_action is None:
+                continue
+        elif key == "UP":
             sel = (sel - 1) % len(items)
         elif key == "DOWN":
             sel = (sel + 1) % len(items)
@@ -1458,7 +1648,7 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
     saved_tty = _enter_raw_tty()
 
     try:
-        sys.stdout.write("\x1b[?1049h\x1b[?25h")
+        sys.stdout.write("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25h")
         sys.stdout.flush()
 
         if buf is None:
@@ -1468,13 +1658,72 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
 
         while True:
             cols, rows = shutil.get_terminal_size((80, 24))
+            rows_e = max(rows, 8)
+            cols_e = max(cols, 36)
             sys.stdout.write(buf.render_frame(rows, cols, bg_mode=bg_state[0]))
             sys.stdout.flush()
 
             key = _read_key()
-            if key == "RESIZE":
+            if not key or key == "RESIZE":
                 continue
             buf.status = ""
+
+            mouse = _parse_mouse_event(key)
+            if mouse is not None:
+                mkind, m_row, m_col = mouse
+                body_rows = rows_e - 4
+                gutter_w = max(len(str(len(buf.lines))) + 3, 6)
+                if mkind == "WHEEL_UP":
+                    if buf.scroll_y > 0:
+                        buf.scroll_y = max(0, buf.scroll_y - 3)
+                        if buf.row >= buf.scroll_y + body_rows:
+                            buf.row = buf.scroll_y + body_rows - 1
+                    else:
+                        buf.row = max(0, buf.row - 3)
+                    buf._clamp_col()
+                    continue
+                if mkind == "WHEEL_DOWN":
+                    max_sy = max(0, len(buf.lines) - body_rows)
+                    if buf.scroll_y < max_sy:
+                        buf.scroll_y = min(max_sy, buf.scroll_y + 3)
+                        if buf.row < buf.scroll_y:
+                            buf.row = buf.scroll_y
+                    else:
+                        buf.row = min(len(buf.lines) - 1, buf.row + 3)
+                    buf._clamp_col()
+                    continue
+                if m_row == rows_e:
+                    footer = " ^S Save   ^R Run   ^P Menu   ^K Cut   ^U Paste   ^G Help   ^X Exit "
+                    mapped = _footer_shortcut_hit(
+                        footer[:cols_e],
+                        m_col,
+                        [
+                            ("^S Save", "\x13"),
+                            ("^R Run", "\x12"),
+                            ("^P Menu", "\x10"),
+                            ("^K Cut", "\x0b"),
+                            ("^U Paste", "\x15"),
+                            ("^G Help", "\x07"),
+                            ("^X Exit", "\x18"),
+                        ],
+                    )
+                    if mapped is not None:
+                        key = mapped
+                    else:
+                        continue
+                elif 3 <= m_row <= 2 + body_rows:
+                    target_row = min(
+                        max(0, buf.scroll_y + (m_row - 3)), len(buf.lines) - 1
+                    )
+                    target_col = min(
+                        max(0, buf.scroll_x + max(0, m_col - (gutter_w + 1))),
+                        len(buf.lines[target_row]),
+                    )
+                    buf.row = target_row
+                    buf.col = target_col
+                    continue
+                else:
+                    continue
 
             if key == "\x10":  # Ctrl+P -> TUI Menu
                 action, next_buf = _run_menu_tui(buf, bg_state)
@@ -1558,6 +1807,6 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
                 buf.insert_char(key)
 
     finally:
-        sys.stdout.write("\x1b[?1049l\x1b[?25h\x1b[0m")
+        sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?25h\x1b[0m")
         sys.stdout.flush()
         _leave_raw_tty(saved_tty)

@@ -19,7 +19,9 @@ from saylang.nana import (
     _clip_ansi,
     _compose_screen,
     _enter_raw_tty,
+    _footer_shortcut_hit,
     _leave_raw_tty,
+    _parse_mouse_event,
     _prompt_bar,
     _read_key,
     _show_overlay,
@@ -1094,7 +1096,7 @@ def run_learn(
 
     try:
         if not _managed_tty:
-            sys.stdout.write("\x1b[?1049h")
+            sys.stdout.write("\x1b[?1049h\x1b[?1000h\x1b[?1006h")
             sys.stdout.flush()
 
         def save_state(cur_num: int, buf: NanaBuffer | None = None, lesson: Lesson | None = None) -> None:
@@ -1112,12 +1114,30 @@ def run_learn(
             sel = max(0, min(initial_sel, len(LESSONS) - 1))
             while True:
                 cols, rows = shutil.get_terminal_size((80, 24))
+                rows_e = max(rows, 10)
                 sys.stdout.write(
                     render_lesson_map(sel, completed, rows, cols, bg_mode=bg_state[0])
                 )
                 sys.stdout.flush()
                 k = _read_key()
-                if k == "RESIZE":
+                if not k or k == "RESIZE":
+                    continue
+                mouse = _parse_mouse_event(k)
+                if mouse is not None:
+                    mkind, m_row, _m_col = mouse
+                    if mkind == "WHEEL_UP":
+                        sel = (sel - 1) % len(LESSONS)
+                        continue
+                    if mkind == "WHEEL_DOWN":
+                        sel = (sel + 1) % len(LESSONS)
+                        continue
+                    first_row = 7 if rows_e >= 17 else 4
+                    list_cap = max(rows_e - 2 - (first_row - 1), 2)
+                    scroll = max(0, sel - list_cap + 1)
+                    if 0 <= m_row - first_row < list_cap:
+                        idx = scroll + (m_row - first_row)
+                        if 0 <= idx < len(LESSONS):
+                            return idx
                     continue
                 if k == "t":
                     bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
@@ -1145,7 +1165,7 @@ def run_learn(
         if lesson_num is not None:
             if not (1 <= lesson_num <= len(LESSONS)):
                 if not _managed_tty:
-                    sys.stdout.write("\x1b[?1049l\x1b[?25h\x1b[0m")
+                    sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?25h\x1b[0m")
                     sys.stdout.flush()
                 print(
                     f"Lesson {lesson_num} does not exist. Choose 1..{len(LESSONS)}.",
@@ -1171,6 +1191,8 @@ def run_learn(
 
             while True:
                 cols, rows = shutil.get_terminal_size((80, 24))
+                rows_e = max(rows, 10)
+                cols_e = max(cols, 36)
                 sys.stdout.write(
                     render_learn_workspace(
                         lesson,
@@ -1186,9 +1208,79 @@ def run_learn(
                 sys.stdout.flush()
 
                 key = _read_key()
-                if key == "RESIZE":
+                if not key or key == "RESIZE":
                     continue
                 buf.status = ""
+
+                mouse = _parse_mouse_event(key)
+                if mouse is not None:
+                    mkind, m_row, m_col = mouse
+                    body_rows = rows_e - 4
+                    gutter_w = max(len(str(len(buf.lines))) + 3, 6)
+                    if cols_e >= 92:
+                        left_w = max(36, min(52, cols_e * 42 // 100))
+                        code_start_row = 3
+                        ed_rows = body_rows
+                        code_start_col = left_w + 1 + gutter_w + 1
+                        editor_min_col = left_w + 2
+                    else:
+                        code_start_row = 5
+                        ed_rows = max(body_rows - 2, 3)
+                        code_start_col = gutter_w + 1
+                        editor_min_col = 1
+
+                    if mkind == "WHEEL_UP":
+                        if buf.scroll_y > 0:
+                            buf.scroll_y = max(0, buf.scroll_y - 3)
+                            if buf.row >= buf.scroll_y + ed_rows:
+                                buf.row = buf.scroll_y + ed_rows - 1
+                        else:
+                            buf.row = max(0, buf.row - 3)
+                        buf._clamp_col()
+                        continue
+                    if mkind == "WHEEL_DOWN":
+                        max_sy = max(0, len(buf.lines) - ed_rows)
+                        if buf.scroll_y < max_sy:
+                            buf.scroll_y = min(max_sy, buf.scroll_y + 3)
+                            if buf.row < buf.scroll_y:
+                                buf.row = buf.scroll_y
+                        else:
+                            buf.row = min(len(buf.lines) - 1, buf.row + 3)
+                        buf._clamp_col()
+                        continue
+                    if m_row == rows_e:
+                        footer_txt = " ^T Tests  ^R Run  ^H Hint  ^B Brief  ^L Map  ^E Reset  ^X Exit "
+                        mapped = _footer_shortcut_hit(
+                            footer_txt[:cols_e],
+                            m_col,
+                            [
+                                ("^T Tests", "\x14"),
+                                ("^R Run", "\x12"),
+                                ("^H Hint", "\x08"),
+                                ("^B Brief", "\x02"),
+                                ("^L Map", "\x0c"),
+                                ("^E Reset", "\x05"),
+                                ("^X Exit", "\x18"),
+                            ],
+                        )
+                        if mapped is not None:
+                            key = mapped
+                        else:
+                            continue
+                    elif m_col >= editor_min_col and code_start_row <= m_row < code_start_row + ed_rows:
+                        target_row = min(
+                            max(0, buf.scroll_y + (m_row - code_start_row)),
+                            len(buf.lines) - 1,
+                        )
+                        target_col = min(
+                            max(0, buf.scroll_x + max(0, m_col - code_start_col)),
+                            len(buf.lines[target_row]),
+                        )
+                        buf.row = target_row
+                        buf.col = target_col
+                        continue
+                    else:
+                        continue
 
                 if key in ("\x18", "\x11", "\x03"):  # Ctrl+X / Ctrl+Q / Ctrl+C
                     save_state(lesson.number, buf, lesson)
@@ -1318,6 +1410,6 @@ def run_learn(
         return 0
     finally:
         if not _managed_tty:
-            sys.stdout.write("\x1b[?1049l\x1b[?25h\x1b[0m")
+            sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?25h\x1b[0m")
             sys.stdout.flush()
             _leave_raw_tty(saved_tty)

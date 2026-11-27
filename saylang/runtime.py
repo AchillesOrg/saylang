@@ -633,12 +633,13 @@ def say_read_key(input_fn: object = None) -> str:
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
+        ch_b = os.read(fd, 1)
+        ch = ch_b.decode("utf-8", errors="replace")
         if ch == "\x1b":
-            if select.select([sys.stdin], [], [], 0.03)[0]:
-                nxt = sys.stdin.read(1)
-                if nxt == "[":
-                    code = sys.stdin.read(1)
+            if select.select([fd], [], [], 0.05)[0]:
+                nxt = os.read(fd, 1).decode("utf-8", errors="replace")
+                if nxt in ("[", "O") and select.select([fd], [], [], 0.05)[0]:
+                    code = os.read(fd, 1).decode("utf-8", errors="replace")
                     return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(
                         code, "esc"
                     )

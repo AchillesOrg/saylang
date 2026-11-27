@@ -154,6 +154,129 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
         self.assertIn("SayLang Interactive Course", cmap)
         self.assertIn("10%", format_curriculum_list({"01-styled-cards"}))
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX PTY end-to-end test")
+    def test_learn_pty_arrow_keys_and_mouse_support(self) -> None:
+        import fcntl
+        import pty
+        import re
+        import select
+        import struct
+        import termios
+        import time
+
+        ansi_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 110, 0, 0))
+        with tempfile.TemporaryDirectory() as home_dir:
+            env = dict(os.environ, SAYLANG_HOME=home_dir)
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "saylang", "learn"],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=env,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                close_fds=True,
+            )
+            os.close(slave_fd)
+
+            def drain(wait_s: float = 0.2) -> bytes:
+                chunks: list[bytes] = []
+                deadline = time.monotonic() + wait_s
+                while time.monotonic() < deadline:
+                    r, _, _ = select.select([master_fd], [], [], 0.03)
+                    if r:
+                        try:
+                            data = os.read(master_fd, 4096)
+                            if data:
+                                chunks.append(data)
+                        except OSError:
+                            break
+                return b"".join(chunks)
+
+            def drain_until_plain(marker: str, timeout_s: float = 2.0) -> tuple[bytes, str]:
+                buf = bytearray()
+                deadline = time.monotonic() + timeout_s
+                while time.monotonic() < deadline:
+                    r, _, _ = select.select([master_fd], [], [], 0.04)
+                    if r:
+                        try:
+                            data = os.read(master_fd, 4096)
+                            if data:
+                                buf.extend(data)
+                        except OSError:
+                            break
+                    plain = ansi_re.sub("", buf.decode("utf-8", errors="replace"))
+                    if marker in plain:
+                        return bytes(buf), plain
+                plain = ansi_re.sub("", buf.decode("utf-8", errors="replace"))
+                return bytes(buf), plain
+
+            def wait_exit(timeout_s: float = 3.0) -> tuple[int | None, bytes]:
+                buf = bytearray()
+                deadline = time.monotonic() + timeout_s
+                while time.monotonic() < deadline:
+                    r, _, _ = select.select([master_fd], [], [], 0.05)
+                    if r:
+                        try:
+                            data = os.read(master_fd, 4096)
+                            if data:
+                                buf.extend(data)
+                        except OSError:
+                            pass
+                    if proc.poll() is not None:
+                        buf.extend(drain(0.05))
+                        return proc.returncode, bytes(buf)
+                return proc.poll(), bytes(buf)
+
+            try:
+                raw_init, plain_init = drain_until_plain("SayLang Interactive Course")
+                self.assertIn(b"\x1b[?1006h", raw_init)
+                self.assertIn("SayLang Interactive Course", plain_init)
+
+                # Down arrow in map moves selection cleanly without exiting
+                os.write(master_fd, b"\x1b[B")
+                _, plain_down = drain_until_plain("▌ ○  2.")
+                self.assertIsNone(proc.poll(), "learn exited prematurely on Down arrow")
+                self.assertIn("▌ ○  2.", plain_down)
+
+                # SGR mouse wheel down -> moves to lesson 3
+                os.write(master_fd, b"\x1b[<65;20;8M")
+                _, plain_wheel = drain_until_plain("▌ ○  3.")
+                self.assertIsNone(proc.poll())
+                self.assertIn("▌ ○  3.", plain_wheel)
+
+                # SGR click lesson 1 row (row 7) -> opens Lesson 1 workspace
+                os.write(master_fd, b"\x1b[<0;20;7M\x1b[<0;20;7m")
+                _, plain_ws = drain_until_plain("LEARN 1/10")
+                self.assertIn("LEARN 1/10", plain_ws)
+
+                # Arrow key burst inside Lesson 1 editor must move cursor, NOT insert [D/[A/[B/[C
+                os.write(master_fd, b"\x1b[D\x1b[A\x1b[B\x1b[C\x1b[B\x1b[C")
+                _, plain_burst = drain_until_plain("Ln 3, Col 2")
+                self.assertNotIn("[D", plain_burst)
+                self.assertNotIn("[A", plain_burst)
+                self.assertNotIn("[C", plain_burst)
+                self.assertNotIn("│ [B", plain_burst)
+                self.assertIn('1 │ set hero to "SayLang"', plain_burst)
+                self.assertIn("Ln 3, Col 2", plain_burst)
+
+                # Mouse click on line 3 col 5 in wide workspace (code_start_col = 46+1+6+1 = 54 -> col 58, row 5)
+                os.write(master_fd, b"\x1b[<0;58;5M\x1b[<0;58;5m")
+                _, plain_click = drain_until_plain("Ln 3, Col 5")
+                self.assertIn("Ln 3, Col 5", plain_click)
+
+                # Clean exit with Ctrl+X
+                os.write(master_fd, b"\x18")
+                rc, tail = wait_exit()
+                self.assertEqual(rc, 0)
+                self.assertIn(b"\x1b[?1006l", tail)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+                os.close(master_fd)
+
 
 if __name__ == "__main__":
     unittest.main()
