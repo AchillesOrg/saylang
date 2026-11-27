@@ -13,10 +13,13 @@ from saylang.ast_nodes import (
     BuiltinExpr,
     CallExpr,
     ChangeStmt,
+    ChooseExpr,
     ClearScreenStmt,
     CompareOp,
+    CursorStmt,
     EntryAccess,
     EveryStmt,
+    ExitStmt,
     Expr,
     ExprStmt,
     FailStmt,
@@ -36,6 +39,7 @@ from saylang.ast_nodes import (
     PipeExpr,
     Program,
     ReadFileExpr,
+    ReadKeyExpr,
     RemoveStmt,
     RepeatStmt,
     ReturnStmt,
@@ -80,6 +84,7 @@ _RESERVED_PY_NAMES = {
     "sorted",
     "reversed",
     "datetime",
+    "json",
     "math",
     "os",
     "random",
@@ -114,6 +119,13 @@ _BUILTIN_MAP = {
     "to_number": "say_to_number",
     "to_text": "say_to_text",
     "type_of": "say_type_of",
+    "file_exists": "say_file_exists",
+    "list_files": "say_list_files",
+    "from_json": "say_from_json",
+    "to_json": "say_to_json",
+    "split": "say_split",
+    "replace": "say_replace",
+    "unique": "say_unique",
 }
 
 _BINOP_MAP = {
@@ -243,6 +255,7 @@ class PythonTranspiler:
             self._emit()
 
         self._emit("# --- COMPILED SAYLANG PROGRAM ---")
+        self._emit("say_configure_utf8_stdio()")
         if not program.statements:
             self._emit("pass")
         else:
@@ -293,6 +306,15 @@ class PythonTranspiler:
 
         if isinstance(stmt, ClearScreenStmt):
             self._emit("say_clear_screen()")
+            return
+
+        if isinstance(stmt, CursorStmt):
+            self._emit(f"say_cursor({stmt.visible!r})")
+            return
+
+        if isinstance(stmt, ExitStmt):
+            code = f"int({self._emit_expr(stmt.code)})" if stmt.code is not None else "0"
+            self._emit(f"raise SystemExit({code})")
             return
 
         if isinstance(stmt, WaitStmt):
@@ -636,6 +658,16 @@ class PythonTranspiler:
 
         if isinstance(expr, AskExpr):
             return f"input(say_to_text({self._emit_expr(expr.prompt)}))"
+
+        if isinstance(expr, ReadKeyExpr):
+            return "say_read_key()"
+
+        if isinstance(expr, ChooseExpr):
+            opts = self._emit_expr(expr.options)
+            prompt = (
+                self._emit_expr(expr.prompt) if expr.prompt is not None else "None"
+            )
+            return f"say_choose({opts}, prompt={prompt})"
 
         if isinstance(expr, ReadFileExpr):
             return f"say_read_file({self._emit_expr(expr.path)})"

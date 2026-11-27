@@ -9,10 +9,13 @@ from saylang.ast_nodes import (
     BuiltinExpr,
     CallExpr,
     ChangeStmt,
+    ChooseExpr,
     ClearScreenStmt,
     CompareOp,
+    CursorStmt,
     EntryAccess,
     EveryStmt,
+    ExitStmt,
     Expr,
     ExprStmt,
     FailStmt,
@@ -33,6 +36,7 @@ from saylang.ast_nodes import (
     PipeExpr,
     Program,
     ReadFileExpr,
+    ReadKeyExpr,
     RemoveStmt,
     RepeatStmt,
     ReturnStmt,
@@ -127,6 +131,10 @@ _LIB_COMMANDS = {
     "ascii",
     "box",
     "center",
+    "bar",
+    "table",
+    "rule",
+    "divider",
     "env",
     "sum",
     "min",
@@ -298,7 +306,31 @@ class Parser:
                 return self._parse_flags_decl()
             if w == "clear":
                 return self._parse_clear()
+            if w in ("hide", "show") and self._at_word("cursor", 1):
+                self._advance()
+                self._advance()
+                self._expect_end_of_statement()
+                return CursorStmt(
+                    line=tok.line, column=tok.column, visible=(w == "show")
+                )
+            if w == "exit":
+                self._advance()
+                code_expr: Expr | None = None
+                if self._at_word("with"):
+                    self._advance()
+                    code_expr = self._parse_expr()
+                elif self._can_start_expr():
+                    code_expr = self._parse_expr()
+                self._expect_end_of_statement()
+                return ExitStmt(line=tok.line, column=tok.column, code=code_expr)
             if w in ("wait", "sleep"):
+                nxt_tok = self._peek(1)
+                if w == "wait" and (
+                    self._at_words("for", "key", offset=1) or self._at_word("key", 1)
+                ):
+                    expr = self._parse_expr()
+                    self._expect_end_of_statement()
+                    return ExprStmt(line=tok.line, column=tok.column, expr=expr)
                 return self._parse_wait()
             if w == "every":
                 return self._parse_every()
@@ -906,6 +938,10 @@ class Parser:
             stage_tok = self._consume_ident("a pipe command name")
             stage_name = str(stage_tok.value)
             stage_lower = stage_name.lower()
+            if stage_lower == "parse" and self._at_word("json"):
+                self._advance()
+                stage_name = "parse_json"
+                stage_lower = "parse_json"
             args: list[Expr] = []
             options: dict[str, Expr] = {}
 
@@ -958,6 +994,16 @@ class Parser:
 
                 if nxt.type in (TokenType.STRING, TokenType.NUMBER, TokenType.LPAREN):
                     args.append(self._parse_primary())
+                    continue
+
+                if self._at_word("by"):
+                    self._advance()
+                    options["by"] = self._parse_or()
+                    continue
+
+                if self._at_word("of") and stage_lower == "bar":
+                    self._advance()
+                    options["of"] = self._parse_or()
                     continue
 
                 if self._at_word("with"):
@@ -1313,6 +1359,133 @@ class Parser:
             self._consume_words("read", "file")
             return ReadFileExpr(
                 line=tok.line, column=tok.column, path=self._parse_unary()
+            )
+        if self._at_words("read", "key") or self._at_words("wait", "for", "key"):
+            self._advance()
+            self._advance()
+            if self._at_word("key"):
+                self._advance()
+            return ReadKeyExpr(line=tok.line, column=tok.column)
+        if self._at_word("choose"):
+            self._advance()
+            prompt_expr: Expr | None = None
+            if self._at_word("from"):
+                self._advance()
+            else:
+                prompt_expr = self._parse_expr()
+                self._consume_word("from", "Expected 'from' in 'choose ... from ...'.")
+            options_expr = self._parse_unary()
+            return ChooseExpr(
+                line=tok.line,
+                column=tok.column,
+                options=options_expr,
+                prompt=prompt_expr,
+            )
+        if self._at_words("file", "exists"):
+            self._consume_words("file", "exists")
+            return BuiltinExpr(
+                line=tok.line,
+                column=tok.column,
+                name="file_exists",
+                args=[self._parse_unary()],
+            )
+        if self._at_words("files", "in"):
+            self._consume_words("files", "in")
+            return BuiltinExpr(
+                line=tok.line,
+                column=tok.column,
+                name="list_files",
+                args=[self._parse_unary()],
+            )
+        if self._at_words("parse", "json"):
+            self._consume_words("parse", "json")
+            if self._at_word("of"):
+                self._advance()
+            return BuiltinExpr(
+                line=tok.line,
+                column=tok.column,
+                name="from_json",
+                args=[self._parse_unary()],
+            )
+        if self._at_words("json", "of"):
+            self._consume_words("json", "of")
+            return BuiltinExpr(
+                line=tok.line,
+                column=tok.column,
+                name="to_json",
+                args=[self._parse_unary()],
+            )
+        if self._at_words("terminal", "width"):
+            self._consume_words("terminal", "width")
+            return LibCallExpr(
+                line=tok.line, column=tok.column, name="terminal_width", args=[], options={}
+            )
+        if self._at_words("terminal", "height"):
+            self._consume_words("terminal", "height")
+            return LibCallExpr(
+                line=tok.line, column=tok.column, name="terminal_height", args=[], options={}
+            )
+        if self._at_words("progress", "bar") or (
+            self._at_word("bar") and self._can_start_expr(1)
+        ):
+            self._advance()
+            if self._at_word("bar"):
+                self._advance()
+            val_expr = self._parse_additive()
+            opts: dict[str, Expr] = {}
+            if self._at_word("of"):
+                self._advance()
+                opts["of"] = self._parse_additive()
+            if self._peek().type == TokenType.FLAG:
+                opts.update(self._parse_flag_options())
+            return LibCallExpr(
+                line=tok.line, column=tok.column, name="bar", args=[val_expr], options=opts
+            )
+        if self._at_word("env") and self._can_start_expr(1):
+            self._advance()
+            return LibCallExpr(
+                line=tok.line,
+                column=tok.column,
+                name="env",
+                args=[self._parse_unary()],
+                options={},
+            )
+        if self._at_word("split") and self._can_start_expr(1):
+            self._advance()
+            txt_expr = self._parse_expr()
+            if self._at_word("by"):
+                self._advance()
+                sep_expr = self._parse_unary()
+                return BuiltinExpr(
+                    line=tok.line, column=tok.column, name="split", args=[txt_expr, sep_expr]
+                )
+            return BuiltinExpr(
+                line=tok.line, column=tok.column, name="split", args=[txt_expr]
+            )
+        if self._at_word("replace") and self._can_start_expr(1):
+            self._advance()
+            old_expr = self._parse_expr()
+            self._consume_word("with", "Expected 'with' in 'replace ... with ... in ...'.")
+            new_expr = self._parse_expr()
+            self._consume_word("in", "Expected 'in' in 'replace ... with ... in ...'.")
+            target_expr = self._parse_unary()
+            return BuiltinExpr(
+                line=tok.line,
+                column=tok.column,
+                name="replace",
+                args=[target_expr, old_expr, new_expr],
+            )
+        if self._at_words("unique", "of") or (
+            self._at_word("unique") and self._can_start_expr(1)
+        ):
+            self._advance()
+            if self._at_word("of"):
+                self._advance()
+            return BuiltinExpr(
+                line=tok.line,
+                column=tok.column,
+                name="unique",
+                args=[self._parse_unary()],
             )
         if self._at_word("ask"):
             self._advance()

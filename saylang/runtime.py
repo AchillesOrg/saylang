@@ -6,6 +6,7 @@ from saylang.errors import SayRuntimeError
 
 # --- SAYLANG RUNTIME START ---
 import datetime
+import json
 import math
 import os
 import random
@@ -51,6 +52,10 @@ _PREBUILT_LIBS = {
     "sys",
     "flags",
     "tty",
+    "tui",
+    "ui",
+    "json",
+    "files",
 }
 
 AUTO_LIB_VALUES = {
@@ -65,6 +70,11 @@ AUTO_LIB_VALUES = {
     "weekday",
     "cwd",
     "os",
+    "args",
+    "terminal_width",
+    "terminal_height",
+    "divider",
+    "rule",
 }
 
 _FG_COLORS: dict[str, str] = {
@@ -199,9 +209,21 @@ _ASCII_FONT_3: dict[str, tuple[str, ...]] = {
 }
 
 
+def say_configure_utf8_stdio() -> None:
+    """Reconfigure standard output and error streams to UTF-8 on Windows/pipes."""
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def _enable_windows_ansi() -> None:
-    """Best-effort enablement of ANSI VT100 escapes on Windows terminals."""
+    """Best-effort enablement of ANSI VT100 escapes and UTF-8 on Windows terminals."""
     global _ANSI_INITIALIZED
+    say_configure_utf8_stdio()
     if _ANSI_INITIALIZED or sys.platform != "win32":
         _ANSI_INITIALIZED = True
         return
@@ -210,6 +232,8 @@ def _enable_windows_ansi() -> None:
         import ctypes
 
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        kernel32.SetConsoleOutputCP(65001)
+        kernel32.SetConsoleCP(65001)
         handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
         mode = ctypes.c_uint32()
         if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
@@ -222,6 +246,11 @@ def say_set_cli_args(args: list[str]) -> None:
     """Store CLI arguments forwarded to the SayLang program."""
     global _CLI_ARGS
     _CLI_ARGS = list(args)
+
+
+def say_cli_args() -> list[str]:
+    """Return forwarded CLI arguments as a list of strings."""
+    return list(sys.argv[1:] if _CLI_ARGS is None else _CLI_ARGS)
 
 
 def say_get_flag(name: str) -> object:
@@ -355,19 +384,346 @@ def say_ascii_art(value: object, size: object = "default") -> str:
     )
 
 
-def say_box(value: object, title: object = None) -> str:
+def say_cursor(visible: bool, stdout: object = None) -> None:
+    """Show or hide the terminal cursor."""
+    _enable_windows_ansi()
+    out = stdout if stdout is not None else sys.stdout
+    out.write("\x1b[?25h" if visible else "\x1b[?25l")  # type: ignore[attr-defined]
+    flush = getattr(out, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def say_box(value: object, title: object = None, width: object = None) -> str:
     """Wrap text in a clean rounded Unicode border box."""
     lines = say_to_text(value).splitlines() or [""]
-    width = max(_visible_width(line) for line in lines)
+    inner_w = max(_visible_width(line) for line in lines)
+    if width is not None and _is_number(width):
+        inner_w = max(inner_w, int(width))  # type: ignore[arg-type]
     if title is not None:
         title_str = f" {say_to_text(title)} "
-        width = max(width, len(title_str))
-        top = "╭" + title_str + "─" * max(width + 2 - len(title_str), 0) + "╮"
+        inner_w = max(inner_w, len(title_str))
+        top = "╭" + title_str + "─" * max(inner_w + 2 - len(title_str), 0) + "╮"
     else:
-        top = "╭" + "─" * (width + 2) + "╮"
-    bottom = "╰" + "─" * (width + 2) + "╯"
-    body = [f"│ {line}{' ' * (width - _visible_width(line))} │" for line in lines]
+        top = "╭" + "─" * (inner_w + 2) + "╮"
+    bottom = "╰" + "─" * (inner_w + 2) + "╯"
+    body = [f"│ {line}{' ' * max(inner_w - _visible_width(line), 0)} │" for line in lines]
     return "\n".join([top, *body, bottom])
+
+
+def say_bar(
+    value: object,
+    total: object = 100,
+    width: object = 20,
+    label: object = None,
+) -> str:
+    """Render a clean Unicode progress bar (`[████████░░] 80%`)."""
+    if not _is_number(value):
+        raise SayRuntimeError(
+            f"Progress bar value must be a number, got {say_type_of(value)}."
+        )
+    tot_num = 100.0 if total is None else float(total)  # type: ignore[arg-type]
+    if total is not None and not _is_number(total):
+        raise SayRuntimeError(
+            f"Progress bar total must be a number, got {say_type_of(total)}."
+        )
+    if tot_num <= 0:
+        raise SayRuntimeError("Progress bar total must be greater than zero.")
+    bar_w = int(width) if width is not None and _is_number(width) else 20  # type: ignore[arg-type]
+    bar_w = max(bar_w, 4)
+
+    ratio = max(0.0, min(1.0, float(value) / tot_num))  # type: ignore[arg-type]
+    filled = int(round(ratio * bar_w))
+    pct = int(round(ratio * 100))
+    bar_str = f"[{'█' * filled}{'░' * (bar_w - filled)}] {pct}%"
+    if label is not None and str(label):
+        return f"{say_to_text(label)} {bar_str}"
+    return bar_str
+
+
+def say_rule(width: object = None, title: object = None) -> str:
+    """Render a crisp terminal horizontal rule / divider."""
+    term_w = shutil.get_terminal_size((80, 24)).columns
+    w = int(width) if width is not None and _is_number(width) else min(term_w, 48)  # type: ignore[arg-type]
+    w = max(w, 6)
+    if title is None or not str(title):
+        return "─" * w
+    t = f" {say_to_text(title)} "
+    if len(t) >= w:
+        return t
+    left = (w - len(t)) // 2
+    right = w - len(t) - left
+    return f"{'─' * left}{t}{'─' * right}"
+
+
+def say_table(rows: object) -> str:
+    """Render a list of maps or lists as a rounded Unicode terminal table."""
+    if not isinstance(rows, list):
+        raise SayRuntimeError(
+            f"Table expects a list of rows, got {say_type_of(rows)}."
+        )
+    if not rows:
+        return "(empty table)"
+
+    headers: list[str] = []
+    str_rows: list[list[str]] = []
+
+    if all(isinstance(r, dict) for r in rows):
+        seen: set[object] = set()
+        raw_keys: list[object] = []
+        for r in rows:
+            for k in r:  # type: ignore[union-attr]
+                if k not in seen:
+                    seen.add(k)
+                    raw_keys.append(k)
+        headers = [say_to_text(k) for k in raw_keys]
+        for r in rows:
+            str_rows.append(
+                [say_to_text(r.get(k, "")) for k in raw_keys]  # type: ignore[union-attr]
+            )
+    elif all(isinstance(r, list) for r in rows):
+        col_count = max(len(r) for r in rows)  # type: ignore[arg-type]
+        if col_count == 0:
+            return "(empty table)"
+        headers = [f"Col {i + 1}" for i in range(col_count)]
+        for r in rows:
+            padded = [say_to_text(r[i]) if i < len(r) else "" for i in range(col_count)]  # type: ignore[index, arg-type]
+            str_rows.append(padded)
+    else:
+        headers = ["Value"]
+        str_rows = [[say_to_text(r)] for r in rows]
+
+    widths = [len(h) for h in headers]
+    for r in str_rows:
+        for i, cell in enumerate(r):
+            widths[i] = max(widths[i], _visible_width(cell))
+
+    def fmt_row(cells: list[str]) -> str:
+        parts = [
+            f" {c}{' ' * max(widths[i] - _visible_width(c), 0)} "
+            for i, c in enumerate(cells)
+        ]
+        return "│" + "│".join(parts) + "│"
+
+    top = "╭" + "┬".join("─" * (w + 2) for w in widths) + "╮"
+    mid = "├" + "┼".join("─" * (w + 2) for w in widths) + "┤"
+    bot = "╰" + "┴".join("─" * (w + 2) for w in widths) + "╯"
+    lines = [top, fmt_row(headers), mid, *(fmt_row(r) for r in str_rows), bot]
+    return "\n".join(lines)
+
+
+def say_to_json(val: object, pretty: bool = True) -> str:
+    """Serialize a SayLang value to JSON text."""
+    try:
+        return json.dumps(val, indent=2 if pretty else None, ensure_ascii=False)
+    except TypeError as exc:
+        raise SayRuntimeError(f"Cannot convert value to JSON: {exc}") from exc
+
+
+def say_from_json(text: object) -> object:
+    """Parse JSON text into SayLang values."""
+    if not isinstance(text, str):
+        raise SayRuntimeError(f"parse json expects text, got {say_type_of(text)}.")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SayRuntimeError(f"Invalid JSON: {exc.msg}") from exc
+
+
+def say_file_exists(path: object) -> bool:
+    """Return True if a file or directory exists at `path`."""
+    if not isinstance(path, str):
+        raise SayRuntimeError("File path must be text.")
+    return Path(path).exists()
+
+
+def say_list_files(dirpath: object = ".") -> list[str]:
+    """Return sorted file/entry names inside `dirpath`."""
+    if not isinstance(dirpath, str):
+        raise SayRuntimeError("Directory path must be text.")
+    target = Path(dirpath)
+    if not target.is_dir():
+        raise SayRuntimeError(f"Directory not found: '{dirpath}'.")
+    return sorted(p.name for p in target.iterdir())
+
+
+def say_split(text: object, sep: object = None) -> list[str]:
+    """Split text into a list using an optional separator."""
+    if not isinstance(text, str):
+        raise SayRuntimeError(f"Cannot split {say_type_of(text)}.")
+    if sep is None:
+        return text.split()
+    if not isinstance(sep, str):
+        raise SayRuntimeError("Split separator must be text.")
+    if sep == "":
+        return list(text)
+    return text.split(sep)
+
+
+def say_replace(text: object, old: object, new: object) -> str:
+    """Replace occurrences of `old` with `new` in `text`."""
+    if not isinstance(text, str):
+        raise SayRuntimeError(f"Cannot replace in {say_type_of(text)}.")
+    if not isinstance(old, str) or not isinstance(new, str):
+        raise SayRuntimeError("replace expects text arguments.")
+    return text.replace(old, new)
+
+
+def say_unique(items: object) -> list[object]:
+    """Return a copy of `items` with duplicates removed while preserving order."""
+    if not isinstance(items, list):
+        raise SayRuntimeError(f"Cannot deduplicate {say_type_of(items)}.")
+    out: list[object] = []
+    for item in items:
+        if not any(_say_equals(existing, item) for existing in out):
+            out.append(item)
+    return out
+
+
+def say_pad(text: object, width: object = 10, align: object = "left") -> str:
+    """Pad text to a minimum visible width."""
+    s = say_to_text(text)
+    if not _is_number(width):
+        raise SayRuntimeError("Pad width must be a number.")
+    w = max(int(width), 0)  # type: ignore[arg-type]
+    gap = max(w - _visible_width(s), 0)
+    mode = str(align).strip().lower()
+    if mode == "right":
+        return (" " * gap) + s
+    if mode in ("center", "centre"):
+        left = gap // 2
+        return (" " * left) + s + (" " * (gap - left))
+    return s + (" " * gap)
+
+
+def say_read_key(input_fn: object = None) -> str:
+    """Read a single keypress (`up`, `down`, `left`, `right`, `enter`, `esc`, or char)."""
+    if input_fn is not None or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        fn = input_fn if callable(input_fn) else input
+        raw = str(fn(""))
+        norm = raw.strip().lower()
+        if norm in ("", "enter", "return"):
+            return "enter"
+        if norm in ("up", "down", "left", "right", "esc", "space", "backspace"):
+            return norm
+        return raw[0] if raw else "enter"
+
+    if sys.platform == "win32":
+        import msvcrt
+
+        ch = msvcrt.getwch()
+        if ch in ("\x00", "\xe0"):
+            code = msvcrt.getwch()
+            return {"H": "up", "P": "down", "K": "left", "M": "right"}.get(code, "")
+        if ch in ("\r", "\n"):
+            return "enter"
+        if ch == "\x1b":
+            return "esc"
+        if ch == " ":
+            return "space"
+        if ch in ("\x7f", "\x08"):
+            return "backspace"
+        return ch
+
+    import select
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            if select.select([sys.stdin], [], [], 0.03)[0]:
+                nxt = sys.stdin.read(1)
+                if nxt == "[":
+                    code = sys.stdin.read(1)
+                    return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(
+                        code, "esc"
+                    )
+            return "esc"
+        if ch in ("\r", "\n"):
+            return "enter"
+        if ch == " ":
+            return "space"
+        if ch in ("\x7f", "\x08"):
+            return "backspace"
+        if ch == "\x03":
+            raise KeyboardInterrupt
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def say_choose(
+    options: object,
+    prompt: object = None,
+    input_fn: object = None,
+    stdout: object = None,
+) -> object:
+    """Present an interactive arrow-key chooser (or numbered prompt when piped)."""
+    if not isinstance(options, list) or not options:
+        raise SayRuntimeError("choose expects a non-empty list of options.")
+    out = stdout if stdout is not None else sys.stdout
+    title = say_to_text(prompt) if prompt is not None else "Choose an option:"
+
+    if input_fn is None and sys.stdin.isatty() and sys.stdout.isatty():
+        _enable_windows_ansi()
+        labels = [say_to_text(opt) for opt in options]
+        sel = 0
+        out.write(title + "\n\x1b[?25l")  # type: ignore[attr-defined]
+        first = True
+        try:
+            while True:
+                if not first:
+                    out.write(f"\x1b[{len(labels)}A")  # type: ignore[attr-defined]
+                first = False
+                for idx, lbl in enumerate(labels):
+                    if idx == sel:
+                        out.write(f"\r\x1b[K  \x1b[7m ▸ {idx + 1}. {lbl} \x1b[0m\n")  # type: ignore[attr-defined]
+                    else:
+                        out.write(f"\r\x1b[K     {idx + 1}. {lbl}\n")  # type: ignore[attr-defined]
+                flush = getattr(out, "flush", None)
+                if callable(flush):
+                    flush()
+                k = say_read_key()
+                if k == "up":
+                    sel = (sel - 1) % len(labels)
+                elif k == "down":
+                    sel = (sel + 1) % len(labels)
+                elif k == "enter":
+                    return options[sel]
+                elif k.isdigit() and 1 <= int(k) <= len(labels):
+                    return options[int(k) - 1]
+                elif k == "esc":
+                    return options[sel]
+        finally:
+            out.write("\x1b[?25h")  # type: ignore[attr-defined]
+            flush = getattr(out, "flush", None)
+            if callable(flush):
+                flush()
+
+    out.write(title + "\n")  # type: ignore[attr-defined]
+    for idx, opt in enumerate(options, start=1):
+        out.write(f"  {idx}. {say_to_text(opt)}\n")  # type: ignore[attr-defined]
+    flush = getattr(out, "flush", None)
+    if callable(flush):
+        flush()
+    fn = input_fn if callable(input_fn) else input
+    raw = str(fn("> ")).strip()
+    if not raw:
+        return options[0]
+    if raw.isdigit():
+        num = int(raw)
+        if 1 <= num <= len(options):
+            return options[num - 1]
+    for opt in options:
+        if say_to_text(opt).strip().lower() == raw.lower():
+            return opt
+    raise SayRuntimeError(
+        f"Invalid choice '{raw}'. Enter a number from 1 to {len(options)}."
+    )
 
 
 def say_center(value: object, width: object = None) -> str:
@@ -453,6 +809,21 @@ def say_lib_call(
         return os.getcwd()
     if key == "os":
         return sys.platform
+    if key == "args":
+        return say_cli_args()
+    if key in ("terminal_width", "width"):
+        return shutil.get_terminal_size((80, 24)).columns
+    if key in ("terminal_height", "height"):
+        return shutil.get_terminal_size((80, 24)).lines
+    if key in ("rule", "divider"):
+        return say_rule(opts.get("width"), opts.get("title") or (arg_list[0] if arg_list else None))
+    if key == "bar":
+        val = arg_list[0] if arg_list else 0
+        total = opts.get("of", opts.get("max", 100))
+        return say_bar(val, total=total, width=opts.get("width", 20), label=opts.get("label"))
+    if key == "table":
+        val = arg_list[0] if arg_list else []
+        return say_table(val)
     if key == "env":
         if not arg_list:
             raise SayRuntimeError("env expects a variable name.")
@@ -462,7 +833,7 @@ def say_lib_call(
         return say_ascii_art(val, opts.get("size", "default"))
     if key == "box":
         val = arg_list[0] if arg_list else ""
-        return say_box(val, opts.get("title"))
+        return say_box(val, opts.get("title"), opts.get("width"))
     if key == "center":
         val = arg_list[0] if arg_list else ""
         return say_center(val, opts.get("width"))
@@ -498,9 +869,31 @@ def say_pipe(
 
     if key == "ascii":
         return say_ascii_art(value, opts.get("size", "default"))
+    if key == "bar":
+        total = opts.get("of", opts.get("max", 100))
+        return say_bar(value, total=total, width=opts.get("width", 20), label=opts.get("label"))
+    if key == "table":
+        return say_table(value)
     if key == "box":
         title = arg_list[0] if arg_list else opts.get("title")
-        return say_box(value, title)
+        return say_box(value, title, opts.get("width"))
+    if key in ("json", "to_json"):
+        return say_to_json(value, pretty=not _flag_enabled(opts, "compact"))
+    if key in ("from_json", "parse_json", "parse json"):
+        return say_from_json(value)
+    if key == "split":
+        sep = arg_list[0] if arg_list else opts.get("by")
+        return say_split(value, sep)
+    if key == "replace":
+        if len(arg_list) < 2:
+            raise SayRuntimeError("replace expects two arguments: old and new text.")
+        return say_replace(value, arg_list[0], arg_list[1])
+    if key == "unique":
+        return say_unique(value)
+    if key == "pad":
+        w = arg_list[0] if arg_list else opts.get("width", 10)
+        align = opts.get("align", "left")
+        return say_pad(value, w, align)
     if key in ("center", "centred", "centered"):
         width = arg_list[0] if arg_list else opts.get("width")
         return say_center(value, width)

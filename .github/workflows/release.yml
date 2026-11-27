@@ -60,6 +60,8 @@ jobs:
           "./${{ matrix.asset }}" --version
           "./${{ matrix.asset }}" run examples/hello.pl
           "./${{ matrix.asset }}" examples/clock.pl -d > /dev/null
+          "./${{ matrix.asset }}" run examples/dashboard.pl > /dev/null
+          "./${{ matrix.asset }}" learn --list > /dev/null
           "./${{ matrix.asset }}" compile examples/fizzbuzz.pl > /dev/null
           "./${{ matrix.asset }}" english "print hello world lol in red" --provider offline --run
       - uses: actions/upload-artifact@v4

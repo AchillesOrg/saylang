@@ -186,6 +186,19 @@ _KEYWORDS = {
     "write",
     "read",
     "file",
+    "files",
+    "exists",
+    "json",
+    "parse",
+    "parse_json",
+    "to_json",
+    "from_json",
+    "choose",
+    "key",
+    "exit",
+    "hide",
+    "show",
+    "cursor",
     "ask",
     "below",
     "centered",
@@ -241,6 +254,20 @@ _LIBS_AND_VALUES = {
     "date",
     "ascii",
     "box",
+    "bar",
+    "progress",
+    "table",
+    "rule",
+    "divider",
+    "args",
+    "env",
+    "terminal",
+    "width",
+    "height",
+    "split",
+    "replace",
+    "unique",
+    "pad",
     "center",
     "upper",
     "uppercase",
@@ -707,6 +734,7 @@ def _welcome_items(has_active_buffer: bool) -> list[tuple[str, str, str]]:
         items.append(("run_flags", "Run with Flags", "Run current buffer with CLI flags (e.g. -d)"))
     items.extend(
         [
+            ("learn", "Learn SayLang", "Interactive freeCodeCamp-style TUI course"),
             ("cheat", "SayLang Cheat Sheet", "Syntax, colours, pipes & stdlib reference"),
             ("quit", "Quit", "Exit nana"),
         ]
@@ -1110,6 +1138,10 @@ def _run_menu_tui(active_buf: NanaBuffer | None) -> tuple[str, NanaBuffer | None
                     parsed_flags = raw_flags.split()
                 _run_buffer(active_buf, cli_args=parsed_flags)
                 return ("edit", active_buf)
+        if chosen_action == "learn":
+            from saylang.learn import run_learn
+
+            run_learn()
         if chosen_action == "cheat":
             _show_overlay("SayLang Cheat Sheet", _CHEAT_SHEET)
         if chosen_action == "quit":

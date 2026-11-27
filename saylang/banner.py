@@ -51,8 +51,8 @@ def render_startup_banner(
             (f"Saylang  v{version}", "bold"),
             ("plain-english · .pl", "dim"),
             ("", ""),
-            (":help  :english  :nana", "dim"),
-            (":vars  :py       :quit", "dim"),
+            (":help  :learn    :nana", "dim"),
+            (":vars  :english  :quit", "dim"),
             ("", ""),
         ]
         inner_width = 48
@@ -84,7 +84,7 @@ def render_startup_banner(
         ("", ""),
         (f"Saylang  v{version}", "bold"),
         ("plain-english .pl", "dim"),
-        (":help  :english  :py  :quit", "dim"),
+        (":help  :learn  :nana  :quit", "dim"),
         ("", ""),
     ]
     inner_width = 50

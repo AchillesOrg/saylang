@@ -14,13 +14,15 @@ from saylang.ast_nodes import FlagsDeclStmt
 from saylang.banner import render_startup_banner
 from saylang.errors import SayError
 from saylang.interpreter import run_source
+from saylang.learn import run_learn
 from saylang.nana import run_nana
 from saylang.parser import parse_source
 from saylang.repl import SayREPL
+from saylang.runtime import say_configure_utf8_stdio
 from saylang.translator import translate_english
 from saylang.transpiler import compile_to_python
 
-_SUBCOMMANDS = {"run", "compile", "check", "ast", "english", "repl", "banner", "nana"}
+_SUBCOMMANDS = {"run", "compile", "check", "ast", "english", "repl", "banner", "nana", "learn"}
 
 
 def _read_source(path_str: str) -> str:
@@ -92,6 +94,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_nana.add_argument("file", nargs="?", help="Optional .pl file to edit")
 
+    p_learn = sub.add_parser(
+        "learn", help="Start the interactive freeCodeCamp-style SayLang TUI course."
+    )
+    p_learn.add_argument(
+        "lesson", nargs="?", type=int, help="Optional lesson number (1-10) to open"
+    )
+    p_learn.add_argument(
+        "--list", action="store_true", dest="list_only", help="List curriculum and progress"
+    )
+    p_learn.add_argument(
+        "--reset", action="store_true", help="Reset saved course progress"
+    )
+
     sub.add_parser("repl", help="Start the interactive SayLang REPL.")
     sub.add_parser("banner", help="Print the SayLang startup icon banner.")
     return parser
@@ -115,6 +130,7 @@ def _print_script_flag_help(file_path: str, source: str) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
+    say_configure_utf8_stdio()
     raw_args = list(sys.argv[1:] if argv is None else argv)
 
     # Shorthand: `saylang path/to/file.pl [-d ...]` -> `saylang run path/to/file.pl [-d ...]`
@@ -140,6 +156,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "nana":
         return run_nana(args.file)
+
+    if args.command == "learn":
+        return run_learn(args.lesson, list_only=args.list_only, reset=args.reset)
 
     try:
         if args.command == "run":

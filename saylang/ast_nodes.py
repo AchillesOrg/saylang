@@ -175,6 +175,16 @@ class WriteFileStmt(Stmt):
 
 
 @dataclass
+class CursorStmt(Stmt):
+    visible: bool
+
+
+@dataclass
+class ExitStmt(Stmt):
+    code: Expr | None = None
+
+
+@dataclass
 class ExprStmt(Stmt):
     expr: Expr
 
@@ -280,3 +290,14 @@ class AskExpr(Expr):
 @dataclass
 class ReadFileExpr(Expr):
     path: Expr
+
+
+@dataclass
+class ReadKeyExpr(Expr):
+    pass
+
+
+@dataclass
+class ChooseExpr(Expr):
+    options: Expr
+    prompt: Expr | None = None

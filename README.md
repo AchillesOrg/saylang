@@ -45,9 +45,9 @@ saylang repl
 
 *(If running directly from the repo without installing, replace `saylang` with `python3 -m saylang`.)*
 
-## Prebuilt Libraries, Pipes & CLI Flags
+## Prebuilt Libraries, CLI & TUI Primitives
 
-Built-in libraries (`time`, `ascii`, `color`, `text`, `math`, `sys`, `flags`, `tty`) work with explicit `import` or auto-imported out of the box:
+Built-in libraries (`time`, `ascii`, `tui`, `json`, `files`, `color`, `text`, `math`, `sys`, `flags`, `tty`) work with explicit `import` or auto-imported out of the box:
 
 ```text
 import time, ascii
@@ -56,7 +56,30 @@ if flag -d then print date below time
 flags: -d
 ```
 
-Run it with `saylang examples/clock.pl -d` — or build a live ticking clock using `every 1 second` + `clear screen` (see `examples/live_clock.pl`).
+Build full CLI tools and TUI widgets rapidly:
+
+```text
+# Progress bars, tables, JSON, interactive menus, file helpers
+say bar 3 of 5 --width 20 --label "Tasks" | box --title "Status"
+say rows | table colour cyan
+set choice to choose "Pick mode:" from a list of "cli", "tui"
+if file exists "config.json"
+    set cfg to parse json (read file "config.json")
+```
+
+Run `saylang examples/dashboard.pl` or `saylang examples/clock.pl -d`, or build a live ticking clock using `every 1 second` + `clear screen` (`examples/live_clock.pl`).
+
+## Interactive Course (`saylang learn`)
+
+Learn SayLang in a freeCodeCamp-style split-pane terminal TUI that goes straight from basics into real CLI flags, tables, JSON/files, TUI menus, and the **Capstone Number Cruncher**:
+
+```sh
+saylang learn            # open curriculum map & split-pane coding TUI
+saylang learn 10         # jump directly to a lesson
+saylang learn --list     # show all 10 lessons & completion progress
+```
+
+Also works directly inside the REPL (`:learn` or `learn`) and from `nana`'s welcome menu.
 
 ## Built-in `nana` TUI Editor
 
@@ -125,6 +148,8 @@ if it fails with error
 
 ## CLI Commands
 
+- `saylang learn [n | --list | --reset]` — launch the interactive freeCodeCamp-style TUI course
+- `saylang nana [file.pl]` — launch the built-in `nana` TUI studio & editor
 - `saylang run <file.pl>` (or `saylang <file.pl>`) — execute a SayLang program
 - `saylang compile <file.pl> [-o out.py] [--run]` — transpile to standalone Python 3
 - `saylang check <file.pl>` — check syntax without running
@@ -136,6 +161,8 @@ if it fails with error
 
 Inside `saylang repl`:
 - `:help` — show quick reference
+- `:learn [n]` — open the interactive SayLang TUI course
+- `:nana [file.pl]` — open the built-in `nana` editor
 - `:vars` — show current variables and functions
 - `:py` — show compiled Python for the last snippet
 - `:ast` — show the parsed AST for the last snippet

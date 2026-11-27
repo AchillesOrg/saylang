@@ -13,6 +13,7 @@ from saylang import __version__
 from saylang.banner import render_startup_banner
 from saylang.errors import SayError
 from saylang.interpreter import Interpreter
+from saylang.learn import run_learn
 from saylang.nana import run_nana
 from saylang.parser import parse_source
 from saylang.translator import translate_english
@@ -47,6 +48,7 @@ def _opens_block(line: str) -> bool:
 
 _HELP_TEXT = """SayLang REPL commands:
   :help             Show this help message
+  :learn [n]        Start the interactive SayLang TUI course (`learn` also works)
   :nana [file.pl]   Open the built-in SayLang editor (`nana` also works)
   :vars             List defined variables and functions
   :run <file.pl>    Run a .pl file in the current session
@@ -59,7 +61,7 @@ _HELP_TEXT = """SayLang REPL commands:
 Multi-line blocks (if, repeat, for each, while, every, to, try):
   Indent block bodies with spaces, then press Enter on a blank line to run."""
 
-_BARE_COMMANDS = {"help", "quit", "exit", "vars", "nana"}
+_BARE_COMMANDS = {"help", "quit", "exit", "vars", "nana", "learn"}
 
 
 class SayREPL:
@@ -108,6 +110,19 @@ class SayREPL:
         if cmd_lower == ":nana":
             target = arg.strip() or None
             run_nana(target)
+            return True
+        if cmd_lower == ":learn":
+            raw_num = arg.strip()
+            if raw_num == "--list":
+                run_learn(list_only=True)
+                return True
+            num: int | None = None
+            if raw_num:
+                if not raw_num.isdigit():
+                    self._write("Usage: :learn [lesson_number | --list]")
+                    return True
+                num = int(raw_num)
+            run_learn(num)
             return True
         if cmd_lower == ":reset":
             self.interpreter = Interpreter(stdout=self.stdout, input_fn=self.input_fn)
@@ -227,7 +242,7 @@ class SayREPL:
                 head, _, _ = stripped.partition(" ")
                 bare = head.lower()
                 if (
-                    (stripped.lower() in _BARE_COMMANDS or bare == "nana")
+                    (stripped.lower() in _BARE_COMMANDS or bare in ("nana", "learn"))
                     and bare not in self.interpreter.global_env.values
                 ):
                     try:

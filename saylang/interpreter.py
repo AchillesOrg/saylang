@@ -15,10 +15,13 @@ from saylang.ast_nodes import (
     BuiltinExpr,
     CallExpr,
     ChangeStmt,
+    ChooseExpr,
     ClearScreenStmt,
     CompareOp,
+    CursorStmt,
     EntryAccess,
     EveryStmt,
+    ExitStmt,
     Expr,
     ExprStmt,
     FailStmt,
@@ -38,6 +41,7 @@ from saylang.ast_nodes import (
     PipeExpr,
     Program,
     ReadFileExpr,
+    ReadKeyExpr,
     RemoveStmt,
     RepeatStmt,
     ReturnStmt,
@@ -124,6 +128,13 @@ _BUILTIN_FUNCS: dict[str, Callable[..., object]] = {
     "to_number": runtime.say_to_number,
     "to_text": runtime.say_to_text,
     "type_of": runtime.say_type_of,
+    "file_exists": runtime.say_file_exists,
+    "list_files": runtime.say_list_files,
+    "from_json": runtime.say_from_json,
+    "to_json": runtime.say_to_json,
+    "split": runtime.say_split,
+    "replace": runtime.say_replace,
+    "unique": runtime.say_unique,
 }
 
 
@@ -148,6 +159,18 @@ class Interpreter:
             runtime.say_set_cli_args(cli_args)
         self.global_env = Environment()
         self.env = self.global_env
+
+    def _write_stdout(self, text: str) -> None:
+        line = text + "\n"
+        try:
+            self.stdout.write(line)
+        except UnicodeEncodeError:
+            enc = getattr(self.stdout, "encoding", None) or "utf-8"
+            safe = line.encode(enc, errors="replace").decode(enc, errors="replace")
+            self.stdout.write(safe)
+        flush = getattr(self.stdout, "flush", None)
+        if callable(flush):
+            flush()
 
     def _source_line(self, line: int) -> str:
         if 1 <= line <= len(self.source_lines):
@@ -251,6 +274,16 @@ class Interpreter:
                 runtime.say_clear_screen(self.stdout)
                 return None
 
+            if isinstance(stmt, CursorStmt):
+                runtime.say_cursor(stmt.visible, self.stdout)
+                return None
+
+            if isinstance(stmt, ExitStmt):
+                code_val = self._eval_expr(stmt.code, env) if stmt.code is not None else 0
+                if isinstance(code_val, bool) or not isinstance(code_val, (int, float)):
+                    raise self._error("Exit code must be a number.", stmt.line, stmt.column)
+                raise SystemExit(int(code_val))
+
             if isinstance(stmt, WaitStmt):
                 secs = self._eval_expr(stmt.seconds, env)
                 runtime.say_sleep(secs)
@@ -309,7 +342,7 @@ class Interpreter:
                     text = runtime.say_style_text(
                         text, color=color_val, background=bg_val, styles=stmt.styles
                     )
-                self.stdout.write(text + "\n")
+                self._write_stdout(text)
                 return None
 
             if isinstance(stmt, IfStmt):
@@ -639,6 +672,25 @@ class Interpreter:
             if isinstance(expr, AskExpr):
                 prompt = runtime.say_to_text(self._eval_expr(expr.prompt, env))
                 return self.input_fn(prompt)
+
+            if isinstance(expr, ReadKeyExpr):
+                custom_input = None if self.input_fn is input else self.input_fn
+                return runtime.say_read_key(input_fn=custom_input)
+
+            if isinstance(expr, ChooseExpr):
+                opts = self._eval_expr(expr.options, env)
+                prompt = (
+                    runtime.say_to_text(self._eval_expr(expr.prompt, env))
+                    if expr.prompt is not None
+                    else "Choose an option:"
+                )
+                custom_input = None if self.input_fn is input else self.input_fn
+                return runtime.say_choose(
+                    opts,
+                    prompt=prompt,
+                    input_fn=custom_input,
+                    stdout=self.stdout,
+                )
 
             if isinstance(expr, ReadFileExpr):
                 path = self._eval_expr(expr.path, env)
