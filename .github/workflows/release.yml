@@ -44,8 +44,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install PyInstaller
-        run: python -m pip install --upgrade pip pyinstaller
+      - name: Install PyInstaller and CA certificates
+        run: python -m pip install --upgrade pip pyinstaller certifi
       - name: Build standalone app
         run: python scripts/build_app.py
       - name: Prepare and smoke-test binary

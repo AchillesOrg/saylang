@@ -1,12 +1,13 @@
 """Tests for the SayLang natural-English translator (offline + mocked LLM)."""
 
 import json
+import ssl
 import unittest
 from unittest.mock import patch
 
 from saylang.errors import SayTranslateError
 from saylang.interpreter import run_and_capture
-from saylang.translator import translate_english
+from saylang.translator import _build_ssl_context, translate_english
 
 
 class _FakeHTTPResponse:
@@ -67,7 +68,12 @@ class TestTranslator(unittest.TestCase):
             "```saylang\nset x to 42\nsay x\n```",
         ]
 
-        def fake_urlopen(req: object, timeout: int = 30) -> _FakeHTTPResponse:
+        seen_contexts: list[object] = []
+
+        def fake_urlopen(
+            req: object, timeout: int = 30, context: object = None
+        ) -> _FakeHTTPResponse:
+            seen_contexts.append(context)
             text = replies.pop(0)
             return _FakeHTTPResponse(
                 {"candidates": [{"content": {"parts": [{"text": text}]}}]}
@@ -80,6 +86,8 @@ class TestTranslator(unittest.TestCase):
                 api_key="test-key",
             )
         self.assertEqual(res.backend, "gemini")
+        self.assertTrue(all(isinstance(c, ssl.SSLContext) for c in seen_contexts))
+        self.assertIsInstance(_build_ssl_context(), ssl.SSLContext)
         self.assertIn("set x to 42", res.say_code)
         out, _ = run_and_capture(res.say_code)
         self.assertEqual(out.strip(), "42")

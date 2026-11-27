@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from saylang.ast_nodes import (
     ForEachStmt,
@@ -124,6 +126,38 @@ def _detect_provider(provider: str, api_key: str | None) -> tuple[str, str | Non
     )
 
 
+def _build_ssl_context() -> ssl.SSLContext:
+    """Build an SSL context with fallback CA bundles for standalone binaries."""
+    env_cert = os.environ.get("SSL_CERT_FILE")
+    if env_cert and Path(env_cert).is_file():
+        return ssl.create_default_context(cafile=env_cert)
+
+    try:
+        import certifi  # type: ignore[import-not-found]
+
+        certifi_ca = certifi.where()
+        if certifi_ca and Path(certifi_ca).is_file():
+            return ssl.create_default_context(cafile=certifi_ca)
+    except ImportError:
+        pass
+
+    default_ca = ssl.get_default_verify_paths().cafile
+    if default_ca and Path(default_ca).is_file():
+        return ssl.create_default_context(cafile=default_ca)
+
+    for candidate in (
+        "/etc/ssl/cert.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/opt/homebrew/etc/openssl@3/cert.pem",
+        "/opt/homebrew/etc/openssl@4/cert.pem",
+    ):
+        if Path(candidate).is_file():
+            return ssl.create_default_context(cafile=candidate)
+
+    return ssl.create_default_context()
+
+
 def _http_post_json(
     url: str, payload: dict[str, object], headers: dict[str, str]
 ) -> dict[str, object]:
@@ -134,8 +168,9 @@ def _http_post_json(
         headers={"Content-Type": "application/json", **headers},
         method="POST",
     )
+    ssl_ctx = _build_ssl_context()
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body)
     except urllib.error.HTTPError as exc:

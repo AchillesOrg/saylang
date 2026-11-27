@@ -158,6 +158,15 @@ class TestParser(unittest.TestCase):
             parse_source("if true\nsay 1\n")
         self.assertIn("indented block", ctx.exception.message)
 
+    def test_ergonomic_set_without_to_and_run_statement(self) -> None:
+        prog = parse_source('set hello "hi"\nrun say hello\n')
+        self.assertEqual(len(prog.statements), 2)
+        s0, s1 = prog.statements
+        assert isinstance(s0, SetStmt)
+        assert isinstance(s0.value, Literal) and s0.value.value == "hi"
+        assert isinstance(s1, SayStmt)
+        assert isinstance(s1.values[0], Var) and s1.values[0].name == "hello"
+
 
 if __name__ == "__main__":
     unittest.main()

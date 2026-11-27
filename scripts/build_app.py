@@ -30,6 +30,12 @@ def main() -> int:
     ico_file = ROOT / "assets" / "icon.ico"
     if sys.platform == "win32" and ico_file.is_file():
         cmd.extend(["--icon", str(ico_file)])
+    try:
+        import certifi  # type: ignore[import-not-found]  # noqa: F401
+
+        cmd.extend(["--collect-data", "certifi", "--hidden-import", "certifi"])
+    except ImportError:
+        pass
     cmd.append(str(entrypoint))
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, cwd=ROOT, check=True)

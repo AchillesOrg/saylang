@@ -166,6 +166,10 @@ class TestInterpreter(unittest.TestCase):
         with self.assertRaises(SayRuntimeError):
             run_and_capture("say 10 divided by 0\n")
 
+        with self.assertRaises(SayRuntimeError) as ctx:
+            run_and_capture("set hello to hi\n")
+        self.assertIn("wrap it in quotes", ctx.exception.message)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pprint
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import TextIO
 
 from saylang import __version__
@@ -42,14 +43,17 @@ def _opens_block(line: str) -> bool:
 _HELP_TEXT = """SayLang REPL commands:
   :help             Show this help message
   :vars             List defined variables and functions
+  :run <file.pl>    Run a .pl file in the current session
   :py               Show compiled Python for the last snippet
   :ast              Show parsed AST for the last snippet
-  :english <text>   Translate everyday English to SayLang and run it
+  :english <text>   Translate everyday English to SayLang and run it (add --offline to force offline)
   :reset            Clear all variables and functions
   :quit             Exit the REPL
 
 Multi-line blocks (if, repeat, for each, while, to, try):
   Indent block bodies with spaces, then press Enter on a blank line to run."""
+
+_BARE_COMMANDS = {"help", "quit", "exit", "vars"}
 
 
 class SayREPL:
@@ -117,12 +121,33 @@ class SayREPL:
                 prog = parse_source(self.last_source)
                 self._write(pprint.pformat(prog, width=88))
             return True
-        if cmd_lower == ":english":
-            if not arg.strip():
-                self._write("Usage: :english <everyday english instruction>")
+        if cmd_lower == ":run":
+            file_arg = arg.strip()
+            if not file_arg:
+                self._write("Usage: :run <path/to/file.pl>")
+                return True
+            path = Path(file_arg)
+            if not path.is_file():
+                self._write(f"File not found: {file_arg}")
                 return True
             try:
-                res = translate_english(arg.strip())
+                self._run_snippet(path.read_text(encoding="utf-8"))
+            except SayError as err:
+                self._write(err.format_pretty(file_arg))
+            return True
+        if cmd_lower == ":english":
+            text_arg = arg.strip()
+            provider = "auto"
+            if text_arg == "--offline":
+                text_arg = ""
+            elif text_arg.startswith("--offline "):
+                provider = "offline"
+                text_arg = text_arg[len("--offline ") :].strip()
+            if not text_arg:
+                self._write("Usage: :english [--offline] <everyday english instruction>")
+                return True
+            try:
+                res = translate_english(text_arg, provider=provider)
                 self._write(f"[saylang ({res.backend})]")
                 for pline in res.say_code.splitlines():
                     self._write(f"  {pline}")
@@ -171,6 +196,11 @@ class SayREPL:
                     continue
                 if line.lstrip().startswith(":"):
                     if not self._handle_command(line):
+                        return 0
+                    continue
+                bare = line.strip().lower()
+                if bare in _BARE_COMMANDS and bare not in self.interpreter.global_env.values:
+                    if not self._handle_command(f":{bare}"):
                         return 0
                     continue
                 if _opens_block(line):

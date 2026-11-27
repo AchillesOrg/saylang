@@ -468,7 +468,9 @@ class Interpreter:
                     return env.get(expr.name)
                 except KeyError as exc:
                     raise self._error(
-                        f"Variable '{expr.name}' is not defined.", expr.line, expr.column
+                        f'Variable \'{expr.name}\' is not defined. If you meant text, wrap it in quotes like "{expr.name}".',
+                        expr.line,
+                        expr.column,
                     ) from exc
 
             if isinstance(expr, ListLiteral):

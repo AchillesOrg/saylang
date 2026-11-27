@@ -72,37 +72,46 @@ class TestCLIAndREPL(unittest.TestCase):
             self.assertIn("Syntax error", err.getvalue())
 
     def test_repl_session_multiline_and_commands(self) -> None:
-        inputs = iter(
-            [
-                "set score to 10",
-                "if score is greater than 5",
-                "    say score",
-                "",
-                ":vars",
-                ":py",
-                ":english print hello",
-                ":quit",
-            ]
-        )
-        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "snippet.pl"
+            script_path.write_text('say "from file"\n', encoding="utf-8")
 
-        def fake_input(prompt: str = "") -> str:
-            try:
-                return next(inputs)
-            except StopIteration as exc:
-                raise EOFError from exc
+            inputs = iter(
+                [
+                    "help",
+                    'set score "10"',
+                    "set score to 10",
+                    "if score is greater than 5",
+                    "    say score",
+                    "",
+                    "vars",
+                    ":py",
+                    f":run {script_path}",
+                    ":english --offline print hello",
+                    "quit",
+                ]
+            )
+            out = io.StringIO()
 
-        repl = SayREPL(stdout=out, input_fn=fake_input)
-        with patch.dict(os.environ, {}, clear=True):
-            rc = repl.run()
-        self.assertEqual(rc, 0)
-        text = out.getvalue()
-        self.assertIn("Saylang", text)
-        self.assertIn(__version__, text)
-        self.assertIn("10\n", text)
-        self.assertIn("score = 10", text)
-        self.assertIn("if say_is_truthy", text)
-        self.assertIn("hello\n", text)
+            def fake_input(prompt: str = "") -> str:
+                try:
+                    return next(inputs)
+                except StopIteration as exc:
+                    raise EOFError from exc
+
+            repl = SayREPL(stdout=out, input_fn=fake_input)
+            with patch.dict(os.environ, {}, clear=True):
+                rc = repl.run()
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("Saylang", text)
+            self.assertIn(__version__, text)
+            self.assertIn("SayLang REPL commands:", text)
+            self.assertIn("10\n", text)
+            self.assertIn("score = 10", text)
+            self.assertIn("if say_is_truthy", text)
+            self.assertIn("from file\n", text)
+            self.assertIn("hello\n", text)
 
     def test_startup_banner_alignment_and_cli_subcommand(self) -> None:
         ansi_re = re.compile(r"\x1b\[[0-9;]*m")

@@ -268,6 +268,20 @@ class Parser:
             if w == "write":
                 return self._parse_write_file()
             if w == "run":
+                next_tok = self._peek(1)
+                if next_tok.type == TokenType.WORD and next_tok.lower in {
+                    "say",
+                    "set",
+                    "let",
+                    "increase",
+                    "decrease",
+                    "add",
+                    "append",
+                    "remove",
+                    "write",
+                }:
+                    self._advance()
+                    return self._parse_statement()
                 expr = self._parse_call_expr(start_tok=self._advance())
                 self._expect_end_of_statement()
                 return ExprStmt(line=tok.line, column=tok.column, expr=expr)
@@ -316,7 +330,10 @@ class Parser:
     def _parse_set(self) -> SetStmt:
         tok = self._advance()
         target = self._parse_target()
-        self._consume_word("to", "Expected 'to' after target in 'set' statement.")
+        if self._at_word("to") or self._at_word("be") or self._at_word("as"):
+            self._advance()
+        elif self._peek().type in (TokenType.NEWLINE, TokenType.EOF, TokenType.DEDENT):
+            raise self._error("Expected 'to' and a value in 'set' statement.")
         value = self._parse_expr()
         self._expect_end_of_statement()
         return SetStmt(line=tok.line, column=tok.column, target=target, value=value)
