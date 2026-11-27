@@ -1,0 +1,78 @@
+name: Release SayLang Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run test suite
+        run: python -m unittest discover -s tests -v
+      - name: Verify examples
+        run: |
+          for f in examples/*.pl; do
+            python -m saylang check "$f"
+            python -m saylang run "$f" > /dev/null
+          done
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: saylang-macos-arm64
+            bin_name: dist/saylang
+          - os: windows-latest
+            asset: saylang-windows-x64.exe
+            bin_name: dist/saylang.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+      - name: Build standalone app
+        run: python scripts/build_app.py
+      - name: Prepare and smoke-test binary
+        shell: bash
+        run: |
+          cp "${{ matrix.bin_name }}" "${{ matrix.asset }}"
+          chmod +x "${{ matrix.asset }}" || true
+          "./${{ matrix.asset }}" --version
+          "./${{ matrix.asset }}" run examples/hello.pl
+          "./${{ matrix.asset }}" compile examples/fizzbuzz.pl > /dev/null
+          "./${{ matrix.asset }}" english "print hello world lol in red" --provider offline --run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*
