@@ -27,9 +27,7 @@ case "$#" in
   *) usage >&2; exit 2 ;;
 esac
 
-if [ "$VERSION" = "latest" ]; then
-  BASE_URL="${RELEASES}/latest/download"
-else
+if [ "$VERSION" != "latest" ]; then
   if ! printf '%s\n' "$VERSION" | LC_ALL=C awk '
     NR != 1 || $0 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$/ { invalid = 1 }
     END { exit invalid }
@@ -37,7 +35,6 @@ else
     echo "Invalid SayLang version '$VERSION'. Use 'latest' or a version such as 'v0.3.2'." >&2
     exit 2
   fi
-  BASE_URL="${RELEASES}/download/v${VERSION#v}"
 fi
 
 OS="$(uname -s)"
@@ -58,6 +55,22 @@ case "$OS" in
     ;;
 esac
 
+if [ "$VERSION" = "latest" ]; then
+  # Resolve the tag before downloading so a cached asset redirect cannot select an older release.
+  CHECK="$(date +%s)-$$"
+  TAG="$(curl -fsSL -H 'Cache-Control: no-cache' \
+    "https://api.github.com/repos/${REPO}/releases/latest?saylang_check=${CHECK}" 2>/dev/null |
+    LC_ALL=C sed -nE 's/(^|.*[,{])[[:space:]]*"tag_name":[[:space:]]*"(v[0-9][0-9A-Za-z.+-]*)".*/\2/p' |
+    head -n 1)"
+  if [ -n "$TAG" ]; then
+    URL="${RELEASES}/download/${TAG}/${ASSET}"
+  else
+    URL="${RELEASES}/latest/download/${ASSET}?saylang_check=${CHECK}"
+  fi
+else
+  URL="${RELEASES}/download/v${VERSION#v}/${ASSET}"
+fi
+
 if [ -w "/usr/local/bin" ]; then
   DEST_DIR="/usr/local/bin"
 else
@@ -69,7 +82,6 @@ DEST="${DEST_DIR}/saylang"
 TMP="$(mktemp "${DEST}.tmp.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
 
-URL="${BASE_URL}/${ASSET}"
 echo "Downloading ${URL}..."
 if ! curl -fsSL -H 'Cache-Control: no-cache' "$URL" -o "$TMP"; then
   echo "Could not download ${ASSET} for '${VERSION}'. Check the published assets at ${RELEASES}." >&2
