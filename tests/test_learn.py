@@ -169,6 +169,8 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 110, 0, 0))
         with tempfile.TemporaryDirectory() as home_dir:
             env = dict(os.environ, SAYLANG_HOME=home_dir)
+            env.pop("COLUMNS", None)
+            env.pop("LINES", None)
             proc = subprocess.Popen(
                 [sys.executable, "-m", "saylang", "learn"],
                 stdin=slave_fd,
@@ -289,6 +291,11 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
 
         ansi_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
+        # Use each PTY's configured size instead of inherited terminal overrides.
+        env = os.environ.copy()
+        env.pop("COLUMNS", None)
+        env.pop("LINES", None)
+
         # 1. Mouse TUI Calculator (real SGR mouse clicks on centered 4-col grid)
         with tempfile.TemporaryDirectory() as pty_tmp:
             calc_file = Path(pty_tmp) / "calc.pl"
@@ -300,6 +307,7 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
                 stdin=sfd,
                 stdout=sfd,
                 stderr=sfd,
+                env=env,
                 cwd=str(Path(__file__).resolve().parent.parent),
                 close_fds=True,
             )
@@ -363,6 +371,7 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
                 stdin=sfd2,
                 stdout=sfd2,
                 stderr=sfd2,
+                env=env,
                 cwd=str(Path(__file__).resolve().parent.parent),
                 close_fds=True,
             )
