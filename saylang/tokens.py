@@ -35,6 +35,7 @@ class Token:
     value: object
     line: int
     column: int
+    raw: str | None = None
 
     @property
     def lower(self) -> str:

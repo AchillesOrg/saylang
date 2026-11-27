@@ -5,15 +5,19 @@ from __future__ import annotations
 from saylang.errors import SayRuntimeError
 
 # --- SAYLANG RUNTIME START ---
+import ast as _ast
 import datetime
+import glob as _glob
 import json
 import math
 import os
 import random
 import re
 import shutil
+import subprocess as _subprocess
 import sys
 import time as _time
+import urllib.request as _urllib_request
 from pathlib import Path
 
 try:
@@ -40,6 +44,10 @@ except NameError:
 _ANSI_INITIALIZED = False
 _CLI_ARGS: list[str] | None = None
 _LAST_PRINT_WIDTH = 0
+_LAST_PRINT_COL = 1
+_ACTIVE_POS: tuple[str | None, int | None, int | None] = (None, None, None)
+_POS_FRAME_USED = False
+_JUST_POSITIONED = False
 _ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 _PREBUILT_LIBS = {
@@ -278,11 +286,49 @@ def say_import_modules(names: list[str]) -> None:
             )
 
 
+def say_reset_pos_frame() -> None:
+    """Reset per-frame active-position consumption between live redraws."""
+    global _POS_FRAME_USED, _LAST_PRINT_COL, _JUST_POSITIONED
+    _POS_FRAME_USED = False
+    _LAST_PRINT_COL = 1
+    _JUST_POSITIONED = False
+
+
+def say_consume_positioned_flag() -> bool:
+    """Return and clear whether the current expression already recorded its position."""
+    global _JUST_POSITIONED
+    was = _JUST_POSITIONED
+    _JUST_POSITIONED = False
+    return was
+
+
 def say_clear_screen(stdout: object = None) -> None:
     """Clear the terminal screen."""
     _enable_windows_ansi()
+    say_reset_pos_frame()
     out = stdout if stdout is not None else sys.stdout
     out.write("\x1b[2J\x1b[H")  # type: ignore[attr-defined]
+    flush = getattr(out, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def say_live_write_frame(
+    frame_text: str, stdout: object = None, *, first: bool = False
+) -> None:
+    """Write a complete live frame atomically without flicker on interactive TTYs."""
+    _enable_windows_ansi()
+    out = stdout if stdout is not None else sys.stdout
+    is_tty = bool(getattr(out, "isatty", lambda: False)())
+    if is_tty:
+        body = frame_text[:-1] if frame_text.endswith("\n") else frame_text
+        lines = body.split("\n")
+        prefix = "\x1b[2J\x1b[H" if first else "\x1b[H"
+        payload = prefix + "\x1b[K\n".join(lines) + "\x1b[K\x1b[J"
+        out.write(payload)  # type: ignore[attr-defined]
+    else:
+        payload = frame_text if (not frame_text or frame_text.endswith("\n")) else (frame_text + "\n")
+        out.write(payload)  # type: ignore[attr-defined]
     flush = getattr(out, "flush", None)
     if callable(flush):
         flush()
@@ -305,37 +351,187 @@ def _visible_width(text: str) -> int:
     return max((len(line) for line in lines), default=0)
 
 
+def _normalize_pos_anchor(anchor: object) -> str | None:
+    if anchor is None:
+        return None
+    raw = " ".join(str(anchor).strip().lower().replace("_", "-").split()).replace(" ", "-")
+    if raw in ("reset", "default", "normal", "none", ""):
+        return None
+    aliases = {
+        "center": "middle-center",
+        "centre": "middle-center",
+        "middle": "middle-center",
+        "center-center": "middle-center",
+        "middle-center": "middle-center",
+        "centre-centre": "middle-center",
+        "top": "top-center",
+        "top-center": "top-center",
+        "top-centre": "top-center",
+        "top-middle": "top-center",
+        "top-left": "top-left",
+        "left-top": "top-left",
+        "top-right": "top-right",
+        "right-top": "top-right",
+        "left": "middle-left",
+        "middle-left": "middle-left",
+        "center-left": "middle-left",
+        "centre-left": "middle-left",
+        "right": "middle-right",
+        "middle-right": "middle-right",
+        "center-right": "middle-right",
+        "centre-right": "middle-right",
+        "bottom": "bottom-center",
+        "bottom-center": "bottom-center",
+        "bottom-centre": "bottom-center",
+        "bottom-middle": "bottom-center",
+        "bottom-left": "bottom-left",
+        "left-bottom": "bottom-left",
+        "bottom-right": "bottom-right",
+        "right-bottom": "bottom-right",
+        "hcenter": "hcenter",
+        "hcentre": "hcenter",
+        "inline-center": "hcenter",
+    }
+    if raw in aliases:
+        return aliases[raw]
+    raise SayRuntimeError(
+        f"Unknown screen position '{anchor}'. Try: center, top-left, top, top-right, left, right, bottom-left, bottom, bottom-right, or reset."
+    )
+
+
+def say_set_position(
+    anchor: object = None, x: object = None, y: object = None
+) -> None:
+    """Set sticky terminal screen anchor or 1-based (x, y) placement for the next block."""
+    global _ACTIVE_POS, _POS_FRAME_USED
+    if x is not None or y is not None:
+        xv = int(x) if x is not None and _is_number(x) else 1  # type: ignore[arg-type]
+        yv = int(y) if y is not None and _is_number(y) else 1  # type: ignore[arg-type]
+        if (x is not None and not _is_number(x)) or (y is not None and not _is_number(y)):
+            raise SayRuntimeError("Position coordinates x and y must be numbers.")
+        _ACTIVE_POS = (None, max(xv, 1), max(yv, 1))
+    else:
+        norm = _normalize_pos_anchor(anchor)
+        _ACTIVE_POS = (None, None, None) if norm is None else (norm, None, None)
+    _POS_FRAME_USED = False
+
+
+def say_position_text(
+    value: object,
+    anchor: object = None,
+    x: object = None,
+    y: object = None,
+    *,
+    width: object = None,
+    height: object = None,
+) -> str:
+    """Position multi-line text using a 3x3 terminal anchor or 1-based (x, y) coords."""
+    global _LAST_PRINT_COL, _LAST_PRINT_WIDTH, _POS_FRAME_USED, _JUST_POSITIONED
+    term = shutil.get_terminal_size((80, 24))
+    cols = int(width) if width is not None and _is_number(width) else term.columns  # type: ignore[arg-type]
+    rows = int(height) if height is not None and _is_number(height) else term.lines  # type: ignore[arg-type]
+    cols = max(cols, 1)
+    rows = max(rows, 1)
+
+    text = say_to_text(value)
+    lines = text.splitlines() or [""]
+    block_h = len(lines)
+    block_w = max((_visible_width(ln) for ln in lines), default=0)
+
+    if x is not None or y is not None:
+        if (x is not None and not _is_number(x)) or (y is not None and not _is_number(y)):
+            raise SayRuntimeError("Position coordinates x and y must be numbers.")
+        start_col = max(int(x) if x is not None else 1, 1)  # type: ignore[arg-type]
+        start_row = max(int(y) if y is not None else 1, 1)  # type: ignore[arg-type]
+    else:
+        norm = _normalize_pos_anchor(anchor)
+        if norm is None:
+            _LAST_PRINT_COL = 1
+            _LAST_PRINT_WIDTH = block_w
+            _POS_FRAME_USED = True
+            _JUST_POSITIONED = True
+            return text
+        if norm == "hcenter":
+            start_row = 1
+            start_col = max((cols - block_w) // 2 + 1, 1)
+        else:
+            vpart, hpart = norm.split("-")
+            if vpart == "top":
+                start_row = 1
+            elif vpart == "bottom":
+                start_row = max(rows - block_h + 1, 1)
+            else:
+                start_row = max((rows - block_h) // 2 + 1, 1)
+            if hpart == "left":
+                start_col = 1
+            elif hpart == "right":
+                start_col = max(cols - block_w + 1, 1)
+            else:
+                start_col = max((cols - block_w) // 2 + 1, 1)
+
+    _LAST_PRINT_COL = start_col
+    _LAST_PRINT_WIDTH = block_w
+    _POS_FRAME_USED = True
+    _JUST_POSITIONED = True
+    top_pad = "\n" * max(start_row - 1, 0)
+    left_pad = " " * max(start_col - 1, 0)
+    return top_pad + "\n".join(left_pad + ln for ln in lines)
+
+
 def say_record_print(text: str) -> None:
     """Record the visible width of the most recently printed block."""
-    global _LAST_PRINT_WIDTH
+    global _LAST_PRINT_WIDTH, _LAST_PRINT_COL
+    if say_consume_positioned_flag():
+        return
     _LAST_PRINT_WIDTH = _visible_width(text)
+    _LAST_PRINT_COL = 1
 
 
-def say_format_layout(text: str, position: str | None = None) -> str:
-    """Align text `below` the previous block or `centered` in the terminal."""
-    if position is None:
-        return text
-    lines = text.splitlines()
-    if not lines:
-        return text
+def say_format_layout(
+    text: str,
+    position: str | None = None,
+    pos_anchor: object = None,
+    pos_x: object = None,
+    pos_y: object = None,
+) -> str:
+    """Apply explicit `pos`, active `pos`, `below`, or `centered` layout to text."""
+    global _LAST_PRINT_COL, _JUST_POSITIONED
+    if pos_anchor is not None or pos_x is not None or pos_y is not None:
+        return say_position_text(text, pos_anchor, pos_x, pos_y)
     if position == "below":
-        target = _LAST_PRINT_WIDTH
-        if target <= _visible_width(text):
+        lines = text.splitlines()
+        if not lines:
             return text
-    elif position == "centered":
+        base = max(_LAST_PRINT_COL - 1, 0)
+        target = _LAST_PRINT_WIDTH
+        if target <= _visible_width(text) and base == 0:
+            return text
+        padded: list[str] = []
+        for line in lines:
+            vis = _visible_width(line)
+            inner_pad = max((target - vis) // 2, 0)
+            padded.append((" " * (base + inner_pad)) + line)
+        _JUST_POSITIONED = True
+        return "\n".join(padded)
+    if position == "centered":
+        lines = text.splitlines()
+        if not lines:
+            return text
         target = shutil.get_terminal_size((80, 24)).columns
-    else:
-        return text
-
-    padded: list[str] = []
-    for line in lines:
-        vis = _visible_width(line)
-        if vis < target:
-            left_pad = (target - vis) // 2
+        padded = []
+        for line in lines:
+            vis = _visible_width(line)
+            left_pad = max((target - vis) // 2, 0)
             padded.append((" " * left_pad) + line)
-        else:
-            padded.append(line)
-    return "\n".join(padded)
+        _LAST_PRINT_COL = 1
+        return "\n".join(padded)
+    if (
+        position is None
+        and _ACTIVE_POS != (None, None, None)
+        and not _POS_FRAME_USED
+    ):
+        return say_position_text(text, _ACTIVE_POS[0], _ACTIVE_POS[1], _ACTIVE_POS[2])
+    return text
 
 
 def say_ascii_art(value: object, size: object = "default") -> str:
@@ -580,6 +776,165 @@ def say_unique(items: object) -> list[object]:
     return out
 
 
+def say_save_file(path: object, value: object) -> None:
+    """Save text, lists, or maps cleanly (auto-JSON for .json files or containers)."""
+    if not isinstance(path, str):
+        raise SayRuntimeError("File path must be text.")
+    target = Path(path)
+    if target.parent and not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    if path.strip().lower().endswith(".json") or isinstance(value, (dict, list)):
+        content = say_to_json(value, pretty=True)
+        if not content.endswith("\n"):
+            content += "\n"
+    else:
+        content = say_to_text(value)
+    target.write_text(content, encoding="utf-8")
+
+
+def say_load_file(path: object) -> object:
+    """Load a file, automatically parsing JSON when the extension is .json."""
+    if not isinstance(path, str):
+        raise SayRuntimeError("File path must be text.")
+    target = Path(path)
+    if not target.is_file():
+        raise SayRuntimeError(f"File not found: '{path}'.")
+    content = target.read_text(encoding="utf-8")
+    if path.strip().lower().endswith(".json"):
+        return say_from_json(content)
+    return content
+
+
+def say_mkdir(path: object) -> None:
+    """Create a folder (and any missing parent folders)."""
+    if not isinstance(path, str):
+        raise SayRuntimeError("Folder path must be text.")
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def say_delete_file(path: object) -> None:
+    """Delete a file or folder."""
+    if not isinstance(path, str):
+        raise SayRuntimeError("File path must be text.")
+    target = Path(path)
+    if not target.exists():
+        raise SayRuntimeError(f"Path not found: '{path}'.")
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+
+
+def say_copy_file(src: object, dst: object) -> None:
+    """Copy a file or folder to a new location."""
+    if not isinstance(src, str) or not isinstance(dst, str):
+        raise SayRuntimeError("Copy expects text file paths.")
+    s_path = Path(src)
+    d_path = Path(dst)
+    if not s_path.exists():
+        raise SayRuntimeError(f"File not found: '{src}'.")
+    if d_path.parent and not d_path.parent.exists():
+        d_path.parent.mkdir(parents=True, exist_ok=True)
+    if s_path.is_dir():
+        shutil.copytree(s_path, d_path, dirs_exist_ok=True)
+    else:
+        shutil.copy2(s_path, d_path)
+
+
+def say_move_file(src: object, dst: object) -> None:
+    """Move or rename a file or folder."""
+    if not isinstance(src, str) or not isinstance(dst, str):
+        raise SayRuntimeError("Move expects text file paths.")
+    s_path = Path(src)
+    d_path = Path(dst)
+    if not s_path.exists():
+        raise SayRuntimeError(f"File not found: '{src}'.")
+    if d_path.parent and not d_path.parent.exists():
+        d_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(s_path), str(d_path))
+
+
+def say_glob(pattern: object) -> list[str]:
+    """Return sorted file paths matching a shell wildcard pattern."""
+    if not isinstance(pattern, str):
+        raise SayRuntimeError("Pattern must be text.")
+    return sorted(_glob.glob(pattern))
+
+
+def say_shell(cmd: object) -> str:
+    """Run a shell command and return its trimmed standard output."""
+    command = say_to_text(cmd)
+    res = _subprocess.run(command, shell=True, capture_output=True, text=True)
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout or f"Command exited with code {res.returncode}.").strip()
+        raise SayRuntimeError(err)
+    return res.stdout.rstrip("\r\n")
+
+
+def say_fetch(url: object) -> str:
+    """Fetch text content from an HTTP/HTTPS URL."""
+    target = say_to_text(url)
+    try:
+        with _urllib_request.urlopen(target, timeout=15) as resp:  # nosec B310
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise SayRuntimeError(f"Could not fetch '{target}': {exc}") from exc
+
+
+def say_grep(
+    value: object,
+    pattern: object,
+    *,
+    ignore_case: bool = False,
+    invert: bool = False,
+) -> object:
+    """Filter lines or list items matching a text/regex pattern."""
+    pat = say_to_text(pattern)
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        rx = re.compile(pat, flags)
+        has_match = lambda s: bool(rx.search(s))
+    except re.error:
+        needle = pat.lower() if ignore_case else pat
+        has_match = lambda s: needle in (s.lower() if ignore_case else s)
+
+    if isinstance(value, list):
+        return [
+            item
+            for item in value
+            if (not has_match(say_to_text(item)) if invert else has_match(say_to_text(item)))
+        ]
+    lines = say_to_text(value).splitlines()
+    matched = [
+        ln
+        for ln in lines
+        if (not has_match(ln) if invert else has_match(ln))
+    ]
+    return "\n".join(matched)
+
+
+def say_head(value: object, n: object = 10) -> object:
+    """Return the first `n` items of a list or lines of text."""
+    if not _is_number(n):
+        raise SayRuntimeError("head count must be a number.")
+    cnt = max(int(n), 0)  # type: ignore[arg-type]
+    if isinstance(value, list):
+        return value[:cnt]
+    return "\n".join(say_to_text(value).splitlines()[:cnt])
+
+
+def say_tail(value: object, n: object = 10) -> object:
+    """Return the last `n` items of a list or lines of text."""
+    if not _is_number(n):
+        raise SayRuntimeError("tail count must be a number.")
+    cnt = max(int(n), 0)  # type: ignore[arg-type]
+    if cnt == 0:
+        return [] if isinstance(value, list) else ""
+    if isinstance(value, list):
+        return value[-cnt:]
+    return "\n".join(say_to_text(value).splitlines()[-cnt:])
+
+
 def say_pad(text: object, width: object = 10, align: object = "left") -> str:
     """Pad text to a minimum visible width."""
     s = say_to_text(text)
@@ -657,13 +1012,172 @@ def say_read_key(input_fn: object = None) -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+def say_calc(expr_val: object) -> int | float:
+    """Safely evaluate basic arithmetic text like '12 + 3 * 4'."""
+    if _is_number(expr_val):
+        return expr_val  # type: ignore[return-value]
+    raw = say_to_text(expr_val).strip()
+    if not raw:
+        raise SayRuntimeError("Nothing to calculate.")
+    cleaned = raw.replace("×", "*").replace("÷", "/")
+    try:
+        tree = _ast.parse(cleaned, mode="eval")
+    except SyntaxError as exc:
+        raise SayRuntimeError(f"Could not understand math '{raw}'.") from exc
+
+    def eval_node(node: _ast.AST) -> int | float:
+        if isinstance(node, _ast.Expression):
+            return eval_node(node.body)
+        if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return node.value
+        if isinstance(node, _ast.UnaryOp):
+            val = eval_node(node.operand)
+            if isinstance(node.op, _ast.UAdd):
+                return +val
+            if isinstance(node.op, _ast.USub):
+                return -val
+        if isinstance(node, _ast.BinOp):
+            lv = eval_node(node.left)
+            rv = eval_node(node.right)
+            if isinstance(node.op, _ast.Add):
+                return lv + rv
+            if isinstance(node.op, _ast.Sub):
+                return lv - rv
+            if isinstance(node.op, _ast.Mult):
+                return lv * rv
+            if isinstance(node.op, _ast.Div):
+                if rv == 0:
+                    raise SayRuntimeError("Cannot divide by zero.")
+                return lv / rv
+            if isinstance(node.op, _ast.FloorDiv):
+                if rv == 0:
+                    raise SayRuntimeError("Cannot divide by zero.")
+                return lv // rv
+            if isinstance(node.op, _ast.Mod):
+                if rv == 0:
+                    raise SayRuntimeError("Cannot divide by zero.")
+                return lv % rv
+            if isinstance(node.op, _ast.Pow):
+                return lv ** rv
+        raise SayRuntimeError(f"Unsupported math operation in '{raw}'.")
+
+    res = eval_node(tree)
+    if isinstance(res, float) and res.is_integer():
+        return int(res)
+    return res
+
+
+def _read_tty_key_or_mouse() -> str:
+    """Read a keypress or SGR mouse click/wheel event in raw TTY mode."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        ch = msvcrt.getwch()
+        if ch in ("\x00", "\xe0"):
+            code = msvcrt.getwch()
+            return {"H": "up", "P": "down", "K": "left", "M": "right"}.get(code, "")
+        if ch in ("\r", "\n"):
+            return "enter"
+        if ch == "\x1b":
+            return "esc"
+        if ch == " ":
+            return "space"
+        if ch in ("\x7f", "\x08"):
+            return "backspace"
+        return ch
+
+    import select
+
+    fd = sys.stdin.fileno()
+    while True:
+        ch_b = os.read(fd, 1)
+        if not ch_b:
+            return ""
+        ch = ch_b.decode("utf-8", errors="replace")
+        if ch == "\x1b":
+            if select.select([fd], [], [], 0.05)[0]:
+                nxt = os.read(fd, 1).decode("utf-8", errors="replace")
+                if nxt == "[":
+                    seq = ""
+                    while select.select([fd], [], [], 0.05)[0]:
+                        sc = os.read(fd, 1).decode("utf-8", errors="replace")
+                        if not sc:
+                            break
+                        seq += sc
+                        if sc.isalpha() or sc == "~":
+                            break
+                    if seq == "M":
+                        for _ in range(3):
+                            if select.select([fd], [], [], 0.05)[0]:
+                                os.read(fd, 1)
+                        return ""
+                    if seq.startswith("<") and len(seq) >= 5 and seq[-1] in ("M", "m"):
+                        body = seq[1:-1].split(";")
+                        if len(body) == 3:
+                            try:
+                                btn = int(body[0])
+                                mc = int(body[1])
+                                mr = int(body[2])
+                            except ValueError:
+                                return ""
+                            if seq[-1] == "m":
+                                return ""
+                            if (btn & 64) != 0:
+                                return "wheel_up" if (btn & 3) == 0 else ("wheel_down" if (btn & 3) == 1 else "")
+                            if (btn & 32) == 0 and (btn & 3) == 0:
+                                return f"click:{mr}:{mc}"
+                        return ""
+                    if seq:
+                        return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(seq[-1], "")
+                    return ""
+                if nxt == "O":
+                    code = os.read(fd, 1).decode("utf-8", errors="replace") if select.select([fd], [], [], 0.05)[0] else ""
+                    return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(code, "")
+                return ""
+            return "esc"
+        if ch in ("\r", "\n"):
+            return "enter"
+        if ch == " ":
+            return "space"
+        if ch in ("\x7f", "\x08"):
+            return "backspace"
+        if ch == "\x03":
+            raise KeyboardInterrupt
+        return ch
+
+
+def _enter_runtime_raw_tty() -> object:
+    if sys.platform == "win32":
+        return None
+    import termios
+
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    raw = termios.tcgetattr(fd)
+    raw[0] &= ~(termios.IXON | termios.ICRNL | termios.ISTRIP | termios.INPCK)
+    raw[2] |= termios.CS8
+    raw[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN)
+    raw[6][termios.VMIN] = 1
+    raw[6][termios.VTIME] = 0
+    termios.tcsetattr(fd, termios.TCSADRAIN, raw)
+    return saved
+
+
+def _leave_runtime_raw_tty(saved: object) -> None:
+    if sys.platform == "win32" or saved is None:
+        return
+    import termios
+
+    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
+
+
 def say_choose(
     options: object,
     prompt: object = None,
     input_fn: object = None,
     stdout: object = None,
 ) -> object:
-    """Present an interactive arrow-key chooser (or numbered prompt when piped)."""
+    """Present an interactive arrow-key / mouse-wheel chooser (or numbered prompt when piped)."""
     if not isinstance(options, list) or not options:
         raise SayRuntimeError("choose expects a non-empty list of options.")
     out = stdout if stdout is not None else sys.stdout
@@ -673,7 +1187,8 @@ def say_choose(
         _enable_windows_ansi()
         labels = [say_to_text(opt) for opt in options]
         sel = 0
-        out.write(title + "\n\x1b[?25l")  # type: ignore[attr-defined]
+        saved = _enter_runtime_raw_tty()
+        out.write(title + "\n\x1b[?1000h\x1b[?1006h\x1b[?25l")  # type: ignore[attr-defined]
         first = True
         try:
             while True:
@@ -682,28 +1197,31 @@ def say_choose(
                 first = False
                 for idx, lbl in enumerate(labels):
                     if idx == sel:
-                        out.write(f"\r\x1b[K  \x1b[7m ▸ {idx + 1}. {lbl} \x1b[0m\n")  # type: ignore[attr-defined]
+                        out.write(f"\r\x1b[K  \x1b[1;97m▌ {idx + 1}. {lbl}\x1b[0m\n")  # type: ignore[attr-defined]
                     else:
-                        out.write(f"\r\x1b[K     {idx + 1}. {lbl}\n")  # type: ignore[attr-defined]
+                        out.write(f"\r\x1b[K    {idx + 1}. {lbl}\n")  # type: ignore[attr-defined]
                 flush = getattr(out, "flush", None)
                 if callable(flush):
                     flush()
-                k = say_read_key()
-                if k == "up":
+                k = _read_tty_key_or_mouse()
+                if not k:
+                    continue
+                if k in ("up", "wheel_up"):
                     sel = (sel - 1) % len(labels)
-                elif k == "down":
+                elif k in ("down", "wheel_down"):
                     sel = (sel + 1) % len(labels)
-                elif k == "enter":
+                elif k == "enter" or k.startswith("click:"):
                     return options[sel]
                 elif k.isdigit() and 1 <= int(k) <= len(labels):
                     return options[int(k) - 1]
                 elif k == "esc":
                     return options[sel]
         finally:
-            out.write("\x1b[?25h")  # type: ignore[attr-defined]
+            out.write("\x1b[?1006l\x1b[?1000l\x1b[?25h")  # type: ignore[attr-defined]
             flush = getattr(out, "flush", None)
             if callable(flush):
                 flush()
+            _leave_runtime_raw_tty(saved)
 
     out.write(title + "\n")  # type: ignore[attr-defined]
     for idx, opt in enumerate(options, start=1):
@@ -725,6 +1243,154 @@ def say_choose(
     raise SayRuntimeError(
         f"Invalid choice '{raw}'. Enter a number from 1 to {len(options)}."
     )
+
+
+def say_buttons(
+    options: object,
+    prompt: object = None,
+    cols: object = 4,
+    input_fn: object = None,
+    stdout: object = None,
+) -> object:
+    """Display a centered clickable mouse button grid in the terminal."""
+    if not isinstance(options, list) or not options:
+        raise SayRuntimeError("buttons expects a non-empty list of labels.")
+    if cols is None:
+        cols_n = 4
+    elif _is_number(cols):
+        cols_n = max(int(cols), 1)  # type: ignore[arg-type]
+    else:
+        raise SayRuntimeError("buttons --cols must be a number.")
+
+    out = stdout if stdout is not None else sys.stdout
+    title = say_to_text(prompt) if prompt is not None else "Buttons"
+    labels = [say_to_text(opt) for opt in options]
+    rows_n = (len(labels) + cols_n - 1) // cols_n
+    cell_w = max(max((len(l) for l in labels), default=1) + 4, 5)
+    grid_w = cols_n * cell_w + (cols_n - 1)
+    panel_w = max(grid_w, len(title) + 2, 24)
+
+    if input_fn is None and sys.stdin.isatty() and sys.stdout.isatty():
+        _enable_windows_ansi()
+        sel = 0
+        saved = _enter_runtime_raw_tty()
+        out.write("\x1b[?1000h\x1b[?1006h\x1b[?25l")  # type: ignore[attr-defined]
+        first = True
+        try:
+            while True:
+                term = shutil.get_terminal_size((80, 24))
+                total_h = rows_n + 4
+                top_row = max((term.lines - total_h) // 2 + 1, 1)
+                left_col = max((term.columns - panel_w) // 2 + 1, 1)
+                grid_row0 = top_row + 2
+                grid_col0 = left_col + max((panel_w - grid_w) // 2, 0)
+
+                parts: list[str] = ["\x1b[2J\x1b[H" if first else "\x1b[H"]
+                first = False
+                parts.append(f"\x1b[{top_row};{left_col}H\x1b[1;96m{title[:panel_w]}\x1b[0m\x1b[K")
+                parts.append(f"\x1b[{top_row + 1};{left_col}H\x1b[90m{'─' * panel_w}\x1b[0m\x1b[K")
+                for gr in range(rows_n):
+                    rpos = grid_row0 + gr
+                    row_str_parts: list[str] = []
+                    for gc in range(cols_n):
+                        idx = gr * cols_n + gc
+                        if idx >= len(labels):
+                            row_str_parts.append(" " * cell_w)
+                            continue
+                        inner = labels[idx].center(cell_w - 4)
+                        box_txt = f"[ {inner} ]"
+                        if idx == sel:
+                            row_str_parts.append(f"\x1b[1;97m{box_txt}\x1b[0m")
+                        else:
+                            row_str_parts.append(f"\x1b[37m{box_txt}\x1b[0m")
+                    parts.append(f"\x1b[{rpos};{grid_col0}H" + " ".join(row_str_parts) + "\x1b[K")
+                footer_row = grid_row0 + rows_n + 1
+                footer_txt = "Click button · Arrows+Enter · Type key · Esc Quit"[:panel_w]
+                parts.append(f"\x1b[{footer_row};{left_col}H\x1b[2m{footer_txt}\x1b[0m\x1b[K\x1b[J")
+                out.write("".join(parts))  # type: ignore[attr-defined]
+                flush = getattr(out, "flush", None)
+                if callable(flush):
+                    flush()
+
+                k = _read_tty_key_or_mouse()
+                if not k:
+                    continue
+                if k.startswith("click:"):
+                    try:
+                        _, r_s, c_s = k.split(":")
+                        mr, mc = int(r_s), int(c_s)
+                    except ValueError:
+                        continue
+                    gr = mr - grid_row0
+                    if 0 <= gr < rows_n and mc >= grid_col0:
+                        rel_c = mc - grid_col0
+                        gc = rel_c // (cell_w + 1)
+                        in_cell = (rel_c % (cell_w + 1)) < cell_w
+                        if in_cell and 0 <= gc < cols_n:
+                            idx = gr * cols_n + gc
+                            if idx < len(options):
+                                return options[idx]
+                    continue
+                if k == "wheel_up":
+                    sel = (sel - 1) % len(options)
+                    continue
+                if k == "wheel_down":
+                    sel = (sel + 1) % len(options)
+                    continue
+                if k == "left":
+                    sel = (sel - 1) % len(options)
+                    continue
+                if k == "right":
+                    sel = (sel + 1) % len(options)
+                    continue
+                if k == "up":
+                    nxt_idx = sel - cols_n
+                    if nxt_idx >= 0:
+                        sel = nxt_idx
+                    continue
+                if k == "down":
+                    nxt_idx = sel + cols_n
+                    if nxt_idx < len(options):
+                        sel = nxt_idx
+                    continue
+                if k == "enter":
+                    return options[sel]
+                if k == "esc":
+                    return ""
+                if len(k) == 1:
+                    for idx, lbl in enumerate(labels):
+                        if lbl.lower() == k.lower():
+                            return options[idx]
+        finally:
+            out.write("\x1b[?1006l\x1b[?1000l\x1b[?25h")  # type: ignore[attr-defined]
+            flush = getattr(out, "flush", None)
+            if callable(flush):
+                flush()
+            _leave_runtime_raw_tty(saved)
+
+    out.write(title + "\n")  # type: ignore[attr-defined]
+    for gr in range(rows_n):
+        row_cells: list[str] = []
+        for gc in range(cols_n):
+            idx = gr * cols_n + gc
+            if idx < len(labels):
+                row_cells.append(f"[ {labels[idx]} ]")
+        out.write(" ".join(row_cells) + "\n")  # type: ignore[attr-defined]
+    flush = getattr(out, "flush", None)
+    if callable(flush):
+        flush()
+    fn = input_fn if callable(input_fn) else input
+    raw = str(fn("")).strip()
+    if not raw or raw.lower() == "esc":
+        return ""
+    for idx, lbl in enumerate(labels):
+        if lbl.strip().lower() == raw.lower():
+            return options[idx]
+    if raw.isdigit():
+        num = int(raw)
+        if 1 <= num <= len(options):
+            return options[num - 1]
+    raise SayRuntimeError(f"Invalid button '{raw}'.")
 
 
 def say_center(value: object, width: object = None) -> str:
@@ -838,6 +1504,17 @@ def say_lib_call(
     if key == "center":
         val = arg_list[0] if arg_list else ""
         return say_center(val, opts.get("width"))
+    if key in ("pos", "position"):
+        anchor = opts.get("anchor") or opts.get("at") or (arg_list[0] if len(arg_list) == 1 else None)
+        x = opts.get("x")
+        y = opts.get("y")
+        if len(arg_list) >= 2:
+            x, y = arg_list[0], arg_list[1]
+        elif len(arg_list) == 1 and _is_number(arg_list[0]):
+            x = arg_list[0]
+            anchor = None
+        say_set_position(anchor=anchor, x=x, y=y)
+        return None
     if key in ("sum", "min", "max", "average"):
         items = arg_list[0] if len(arg_list) == 1 and isinstance(arg_list[0], list) else arg_list
         if not isinstance(items, list) or not items:
@@ -898,6 +1575,36 @@ def say_pipe(
     if key in ("center", "centred", "centered"):
         width = arg_list[0] if arg_list else opts.get("width")
         return say_center(value, width)
+    if key in ("pos", "position"):
+        anchor = opts.get("anchor") or opts.get("at")
+        x = opts.get("x")
+        y = opts.get("y")
+        if len(arg_list) >= 2:
+            x, y = arg_list[0], arg_list[1]
+        elif len(arg_list) == 1:
+            if _is_number(arg_list[0]):
+                x = arg_list[0]
+            elif anchor is None:
+                anchor = arg_list[0]
+        return say_position_text(
+            value,
+            anchor=anchor,
+            x=x,
+            y=y,
+            width=opts.get("width"),
+            height=opts.get("height"),
+        )
+    if key == "grep":
+        pat = arg_list[0] if arg_list else opts.get("pattern", "")
+        ic = _flag_enabled(opts, "i", "ignore-case", "ignore_case")
+        inv = _flag_enabled(opts, "v", "invert")
+        return say_grep(value, pat, ignore_case=ic, invert=inv)
+    if key == "head":
+        cnt = arg_list[0] if arg_list else opts.get("n", 10)
+        return say_head(value, cnt)
+    if key == "tail":
+        cnt = arg_list[0] if arg_list else opts.get("n", 10)
+        return say_tail(value, cnt)
     if key in ("colour", "color"):
         color = arg_list[0] if arg_list else opts.get("colour") or opts.get("color")
         bg = opts.get("on") or opts.get("background")
@@ -924,6 +1631,8 @@ def say_pipe(
         return say_joined(value, sep)
     if key in ("sum", "min", "max", "average"):
         return say_lib_call(key, [value], opts)
+    if key == "calc":
+        return say_calc(value)
 
     raise SayRuntimeError(f"Unknown pipe stage '{stage_name}'.")
 

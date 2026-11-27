@@ -11,6 +11,7 @@ from saylang.ast_nodes import (
     AskExpr,
     BinaryOp,
     BuiltinExpr,
+    ButtonsExpr,
     CallExpr,
     ChangeStmt,
     ChooseExpr,
@@ -24,6 +25,7 @@ from saylang.ast_nodes import (
     ExprStmt,
     FailStmt,
     FieldAccess,
+    FileOpStmt,
     FlagExpr,
     FlagsDeclStmt,
     ForEachStmt,
@@ -31,12 +33,14 @@ from saylang.ast_nodes import (
     FuncDefStmt,
     IfStmt,
     ImportStmt,
+    InterpolatedString,
     ItemAccess,
     LibCallExpr,
     ListLiteral,
     Literal,
     MapLiteral,
     PipeExpr,
+    PositionStmt,
     Program,
     ReadFileExpr,
     ReadKeyExpr,
@@ -54,6 +58,7 @@ from saylang.ast_nodes import (
     WaitStmt,
     WhileStmt,
     WriteFileStmt,
+    find_live_time_options,
 )
 from saylang.parser import parse_source
 from saylang.runtime import AUTO_LIB_VALUES
@@ -92,6 +97,11 @@ _RESERVED_PY_NAMES = {
     "shutil",
     "sys",
     "_time",
+    "_ast",
+    "_glob",
+    "_subprocess",
+    "_urllib_request",
+    "_say_io",
     "Path",
     "AUTO_LIB_VALUES",
     "SayRuntimeError",
@@ -126,6 +136,11 @@ _BUILTIN_MAP = {
     "split": "say_split",
     "replace": "say_replace",
     "unique": "say_unique",
+    "load_file": "say_load_file",
+    "shell": "say_shell",
+    "fetch": "say_fetch",
+    "glob": "say_glob",
+    "calc": "say_calc",
 }
 
 _BINOP_MAP = {
@@ -255,22 +270,102 @@ class PythonTranspiler:
             self._emit()
 
         self._emit("# --- COMPILED SAYLANG PROGRAM ---")
+        self._emit("import io as _say_io")
         self._emit("say_configure_utf8_stdio()")
         if not program.statements:
             self._emit("pass")
         else:
-            for stmt in program.statements:
-                self._emit_stmt(stmt)
+            self._emit_stmt_list(program.statements)
 
         return "\n".join(self._lines).rstrip() + "\n"
 
-    def _emit_block(self, stmts: list[Stmt]) -> None:
-        self._indent += 1
+    def _emit_stmt_list(self, stmts: list[Stmt], *, allow_live: bool = True) -> None:
         if not stmts:
             self._emit("pass")
-        else:
-            for stmt in stmts:
-                self._emit_stmt(stmt)
+            return
+        for idx, stmt in enumerate(stmts):
+            if allow_live:
+                live_opts = find_live_time_options(stmt)
+                if live_opts is not None:
+                    frame_stmts = [
+                        s for s in stmts[idx:] if not isinstance(s, FlagsDeclStmt)
+                    ]
+                    self._emit_live_loop(frame_stmts, live_opts)
+                    return
+            self._emit_stmt(stmt)
+
+    def _emit_live_loop(
+        self, frame_stmts: list[Stmt], live_opts: dict[str, Expr]
+    ) -> None:
+        live_flag = self._fresh("_live")
+        iv_var = self._fresh("_interval")
+        mf_var = self._fresh("_max_frames")
+        tty_var = self._fresh("_is_tty")
+        eff_var = self._fresh("_eff_frames")
+        out_var = self._fresh("_orig_out")
+        fidx_var = self._fresh("_frame_idx")
+        fbuf_var = self._fresh("_frame_buf")
+
+        self._emit(f"{live_flag} = {self._emit_expr(live_opts['live'])}")
+        self._emit(f"if say_is_truthy({live_flag}):")
+        self._indent += 1
+        iv_expr = (
+            self._emit_expr(live_opts["interval"])
+            if "interval" in live_opts
+            else "1.0"
+        )
+        self._emit(f"{iv_var} = {iv_expr}")
+        fexpr = live_opts.get("frames") or live_opts.get("count")
+        self._emit(f"{mf_var} = int({self._emit_expr(fexpr)}) if {str(fexpr is not None)} else None")
+        self._emit(f"{tty_var} = bool(getattr(sys.stdout, 'isatty', lambda: False)())")
+        self._emit(
+            f"{eff_var} = 1 if ({mf_var} is None and not {tty_var}) else {mf_var}"
+        )
+        self._emit(f"{out_var} = sys.stdout")
+        self._emit(f"{fidx_var} = 0")
+        self._emit(f"if {tty_var}:")
+        self._indent += 1
+        self._emit(f"say_cursor(False, {out_var})")
+        self._indent -= 1
+        self._emit("try:")
+        self._indent += 1
+        self._emit(f"while {eff_var} is None or {fidx_var} < {eff_var}:")
+        self._indent += 1
+        self._emit(f"{fbuf_var} = _say_io.StringIO()")
+        self._emit(f"sys.stdout = {fbuf_var}")
+        self._emit("say_reset_pos_frame()")
+        self._emit_stmt_list(frame_stmts, allow_live=False)
+        self._emit(
+            f"say_live_write_frame({fbuf_var}.getvalue(), {out_var}, first=({fidx_var} == 0))"
+        )
+        self._emit(f"{fidx_var} += 1")
+        self._emit(f"if {eff_var} is not None and {fidx_var} >= {eff_var}:")
+        self._indent += 1
+        self._emit("break")
+        self._indent -= 1
+        self._emit(f"say_sleep({iv_var})")
+        self._indent -= 1
+        self._indent -= 1
+        self._emit("except KeyboardInterrupt:")
+        self._indent += 1
+        self._emit("pass")
+        self._indent -= 1
+        self._emit("finally:")
+        self._indent += 1
+        self._emit(f"sys.stdout = {out_var}")
+        self._emit(f"if {tty_var}:")
+        self._indent += 1
+        self._emit(f"say_cursor(True, {out_var})")
+        self._indent -= 2
+        self._indent -= 1
+        self._emit("else:")
+        self._indent += 1
+        self._emit_stmt_list(frame_stmts, allow_live=False)
+        self._indent -= 1
+
+    def _emit_block(self, stmts: list[Stmt]) -> None:
+        self._indent += 1
+        self._emit_stmt_list(stmts)
         self._indent -= 1
 
     def _emit_assign(self, target: Expr, value_expr: str) -> None:
@@ -377,6 +472,25 @@ class PythonTranspiler:
                 )
                 return
 
+        if isinstance(stmt, PositionStmt):
+            anc = self._emit_expr(stmt.anchor) if stmt.anchor is not None else "None"
+            xv = self._emit_expr(stmt.x) if stmt.x is not None else "None"
+            yv = self._emit_expr(stmt.y) if stmt.y is not None else "None"
+            self._emit(f"say_set_position(anchor={anc}, x={xv}, y={yv})")
+            return
+
+        if isinstance(stmt, FileOpStmt):
+            fn_map = {
+                "save": "say_save_file",
+                "mkdir": "say_mkdir",
+                "delete": "say_delete_file",
+                "copy": "say_copy_file",
+                "move": "say_move_file",
+            }
+            args_code = ", ".join(self._emit_expr(a) for a in stmt.args)
+            self._emit(f"{fn_map[stmt.op]}({args_code})")
+            return
+
         if isinstance(stmt, SayStmt):
             if len(stmt.values) == 1:
                 text_expr = f"say_to_text({self._emit_expr(stmt.values[0])})"
@@ -388,10 +502,13 @@ class PythonTranspiler:
 
             txt_var = self._fresh("_txt")
             self._emit(f"{txt_var} = {text_expr}")
-            if stmt.position is not None:
-                self._emit(
-                    f"{txt_var} = say_format_layout({txt_var}, {stmt.position!r})"
-                )
+            p_anc = self._emit_expr(stmt.pos_anchor) if stmt.pos_anchor is not None else "None"
+            p_x = self._emit_expr(stmt.pos_x) if stmt.pos_x is not None else "None"
+            p_y = self._emit_expr(stmt.pos_y) if stmt.pos_y is not None else "None"
+            self._emit(
+                f"{txt_var} = say_format_layout({txt_var}, {stmt.position!r}, "
+                f"pos_anchor={p_anc}, pos_x={p_x}, pos_y={p_y})"
+            )
             self._emit(f"say_record_print({txt_var})")
 
             if stmt.color is not None or stmt.background is not None or stmt.styles:
@@ -560,6 +677,10 @@ class PythonTranspiler:
         if isinstance(expr, Literal):
             return repr(expr.value)
 
+        if isinstance(expr, InterpolatedString):
+            parts = ", ".join(f"say_to_text({self._emit_expr(p)})" for p in expr.parts)
+            return f"''.join([{parts}])"
+
         if isinstance(expr, Var):
             if (
                 expr.name.lower() in AUTO_LIB_VALUES
@@ -668,6 +789,14 @@ class PythonTranspiler:
                 self._emit_expr(expr.prompt) if expr.prompt is not None else "None"
             )
             return f"say_choose({opts}, prompt={prompt})"
+
+        if isinstance(expr, ButtonsExpr):
+            opts = self._emit_expr(expr.options)
+            prompt = (
+                self._emit_expr(expr.prompt) if expr.prompt is not None else "None"
+            )
+            cols_c = self._emit_expr(expr.cols) if expr.cols is not None else "4"
+            return f"say_buttons({opts}, prompt={prompt}, cols={cols_c})"
 
         if isinstance(expr, ReadFileExpr):
             return f"say_read_file({self._emit_expr(expr.path)})"

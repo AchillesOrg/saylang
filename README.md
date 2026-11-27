@@ -51,32 +51,38 @@ Built-in libraries (`time`, `ascii`, `tui`, `json`, `files`, `color`, `text`, `m
 
 ```text
 import time, ascii
-print time --12h | ascii --size default
+pos center
+print time --12h --live | ascii --size default colour cyan
 if flag -d then print date below time
 flags: -d
 ```
 
-Build full CLI tools and TUI widgets rapidly:
+Build CLI tools, clickable mouse TUIs, and bash-style scripts rapidly:
 
 ```text
-# Progress bars, tables, JSON, interactive menus, file helpers
-say bar 3 of 5 --width 20 --label "Tasks" | box --title "Status"
-say rows | table colour cyan
-set choice to choose "Pick mode:" from a list of "cli", "tui"
-if file exists "config.json"
-    set cfg to parse json (read file "config.json")
+# String placeholders, positioning, clickable mouse buttons, calc, tables & files
+set name to "Ada"
+say "Hello, {name}!" | box --title "Hi" pos top-right
+
+set keys to a list of "7", "8", "+", "=", "Q"
+set btn to buttons "Tap key:" from keys --cols 3
+say calc "12 + 3 * 4"
+
+save data to "config.json"
+set cfg to load "config.json"
+say shell "git status -s" | grep "M " | head 5
 ```
 
-Run `saylang examples/dashboard.pl` or `saylang examples/clock.pl -d`, or build a live ticking clock using `every 1 second` + `clear screen` (`examples/live_clock.pl`).
+Run `saylang examples/dashboard.pl` or `saylang examples/clock.pl -d`, or center a live clock directly with `pos center` + `time --12h --live`.
 
 ## Interactive Course (`saylang learn`)
 
-Learn SayLang in a freeCodeCamp-style split-pane terminal TUI that goes straight from basics into real CLI flags, tables, JSON/files, TUI menus, and the **Capstone Number Cruncher**:
+Learn SayLang in plain, zero-jargon English inside a freeCodeCamp-style split-pane terminal TUI with **12 hands-on lessons**, including **CLI Calculator**, **Mouse TUI Calculator**, **Live Centered Clock**, and **Number Cruncher**:
 
 ```sh
 saylang learn            # open curriculum map & split-pane coding TUI
-saylang learn 10         # jump directly to a lesson
-saylang learn --list     # show all 10 lessons & completion progress
+saylang learn 11         # jump directly to Mouse TUI Calculator
+saylang learn --list     # show all 12 lessons & completion progress
 ```
 
 Also works directly inside the REPL (`:learn` or `learn`) and from `nana`'s welcome menu.

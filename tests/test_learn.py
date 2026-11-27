@@ -27,7 +27,7 @@ from saylang.transpiler import compile_to_python
 
 class TestLearnAndCliTuiPrimitives(unittest.TestCase):
     def test_all_lesson_solutions_pass_and_starters_fail(self) -> None:
-        self.assertGreaterEqual(len(LESSONS), 10)
+        self.assertGreaterEqual(len(LESSONS), 12)
         for lesson in LESSONS:
             sol_results = evaluate_lesson(lesson, lesson.solution)
             self.assertTrue(sol_results, f"Lesson {lesson.id} has no tests")
@@ -130,7 +130,7 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
                 buf = io.StringIO()
                 with contextlib.redirect_stdout(buf):
                     self.assertEqual(main(["learn", "--list"]), 0)
-                self.assertIn("1/10 completed", buf.getvalue())
+                self.assertIn("1/12 completed", buf.getvalue())
                 self.assertIn("[✓]  1.", buf.getvalue())
 
         lesson = LESSONS[0]
@@ -152,7 +152,7 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
         cmap = render_lesson_map(0, {"01-styled-cards"}, 24, 90, bg_mode="mica")
         self.assertNotIn("\n", cmap)
         self.assertIn("SayLang Interactive Course", cmap)
-        self.assertIn("10%", format_curriculum_list({"01-styled-cards"}))
+        self.assertIn("8%", format_curriculum_list({"01-styled-cards"}))
 
     @unittest.skipIf(sys.platform == "win32", "POSIX PTY end-to-end test")
     def test_learn_pty_arrow_keys_and_mouse_support(self) -> None:
@@ -248,8 +248,8 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
 
                 # SGR click lesson 1 row (row 7) -> opens Lesson 1 workspace
                 os.write(master_fd, b"\x1b[<0;20;7M\x1b[<0;20;7m")
-                _, plain_ws = drain_until_plain("LEARN 1/10")
-                self.assertIn("LEARN 1/10", plain_ws)
+                _, plain_ws = drain_until_plain("LEARN 1/12")
+                self.assertIn("LEARN 1/12", plain_ws)
 
                 # Arrow key burst inside Lesson 1 editor must move cursor, NOT insert [D/[A/[B/[C
                 os.write(master_fd, b"\x1b[D\x1b[A\x1b[B\x1b[C\x1b[B\x1b[C")
@@ -276,6 +276,122 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
                     proc.kill()
                     proc.wait(timeout=2.0)
                 os.close(master_fd)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX PTY end-to-end test")
+    def test_mouse_tui_calculator_and_live_centered_clock_pty(self) -> None:
+        import fcntl
+        import pty
+        import re
+        import select
+        import struct
+        import termios
+        import time
+
+        ansi_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+        # 1. Mouse TUI Calculator (real SGR mouse clicks on centered 4-col grid)
+        with tempfile.TemporaryDirectory() as pty_tmp:
+            calc_file = Path(pty_tmp) / "calc.pl"
+            calc_file.write_text(LESSONS[10].solution, encoding="utf-8")
+            mfd, sfd = pty.openpty()
+            fcntl.ioctl(sfd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 110, 0, 0))
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "saylang", str(calc_file)],
+                stdin=sfd,
+                stdout=sfd,
+                stderr=sfd,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                close_fds=True,
+            )
+            os.close(sfd)
+
+            def drain_until_plain(fd: int, marker: str, timeout_s: float = 2.0) -> tuple[bytes, str]:
+                buf = bytearray()
+                dl = time.monotonic() + timeout_s
+                while time.monotonic() < dl:
+                    if select.select([fd], [], [], 0.04)[0]:
+                        try:
+                            d = os.read(fd, 4096)
+                            if d:
+                                buf.extend(d)
+                        except OSError:
+                            break
+                    plain = ansi_re.sub("", buf.decode("utf-8", errors="replace"))
+                    if marker in plain:
+                        return bytes(buf), plain
+                return bytes(buf), ansi_re.sub("", buf.decode("utf-8", errors="replace"))
+
+            try:
+                raw0, p0 = drain_until_plain(mfd, "[ Q ]")
+                self.assertIn(b"\x1b[?1006h", raw0)
+                self.assertIn("Calc:", p0)
+
+                for label, col, row, expect in [
+                    ("7", 46, 13, "Calc: 7"),
+                    ("+", 64, 16, "Calc: 7+"),
+                    ("5", 52, 14, "Calc: 7+5"),
+                    ("=", 58, 16, "Calc: 12"),
+                ]:
+                    os.write(mfd, f"\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m".encode())
+                    _, px = drain_until_plain(mfd, expect)
+                    self.assertIn(expect, px, f"Mouse click on {label} did not update {expect}")
+
+                os.write(mfd, b"\x1b[<0;46;17M\x1b[<0;46;17m")  # Click "Q"
+                _, pend = drain_until_plain(mfd, "Result: 12")
+                self.assertIn("Result: 12", pend)
+                rc = proc.wait(timeout=3.0)
+                self.assertEqual(rc, 0)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+                os.close(mfd)
+
+            # 2. Live centered clock (`pos center` + `time --live`)
+            clock_file = Path(pty_tmp) / "clock.pl"
+            clock_file.write_text(
+                "import time, ascii\n"
+                "pos center\n"
+                "print time --12h --live --interval 0.05 --frames 2 | ascii --size small colour cyan\n"
+                "print date below time\n",
+                encoding="utf-8",
+            )
+            mfd2, sfd2 = pty.openpty()
+            fcntl.ioctl(sfd2, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+            proc2 = subprocess.Popen(
+                [sys.executable, "-m", "saylang", str(clock_file)],
+                stdin=sfd2,
+                stdout=sfd2,
+                stderr=sfd2,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                close_fds=True,
+            )
+            os.close(sfd2)
+            raw_out = bytearray()
+            try:
+                dl = time.monotonic() + 3.0
+                while time.monotonic() < dl:
+                    if select.select([mfd2], [], [], 0.05)[0]:
+                        try:
+                            d = os.read(mfd2, 4096)
+                            if d:
+                                raw_out.extend(d)
+                        except OSError:
+                            pass
+                    if proc2.poll() is not None:
+                        break
+                rc2 = proc2.wait(timeout=2.0)
+                self.assertEqual(rc2, 0)
+                txt = bytes(raw_out).decode("utf-8", errors="replace")
+                self.assertIn("\x1b[?25l", txt)
+                self.assertIn("\x1b[2J\x1b[H", txt)
+                self.assertIn("█", txt)
+                self.assertIn("\x1b[?25h", txt)
+            finally:
+                if proc2.poll() is None:
+                    proc2.kill()
+                    proc2.wait(timeout=2.0)
+                os.close(mfd2)
 
 
 if __name__ == "__main__":

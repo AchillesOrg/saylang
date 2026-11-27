@@ -79,6 +79,19 @@ class TestTranspiler(unittest.TestCase):
         compiled_out = _run_compiled_python(src)
         self.assertEqual(compiled_out, interp_out)
 
+    def test_v033_features_transpiler_parity(self) -> None:
+        src = (
+            'set who to "Say"\n'
+            'say "Hi {who | upper}!" pos 4, 2\n'
+            'print time --live --interval 0 --frames 2\n'
+            'say calc "2 + 3 * 4"\n'
+        )
+        interp_out, _ = run_and_capture(src)
+        comp_out = _run_compiled_python(src)
+        self.assertIn("   Hi SAY!", comp_out)
+        self.assertIn("\n14\n", comp_out)
+        self.assertEqual(len(comp_out.splitlines()), len(interp_out.splitlines()))
+
 
 if __name__ == "__main__":
     unittest.main()

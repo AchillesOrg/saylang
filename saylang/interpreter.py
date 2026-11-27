@@ -13,6 +13,7 @@ from saylang.ast_nodes import (
     AskExpr,
     BinaryOp,
     BuiltinExpr,
+    ButtonsExpr,
     CallExpr,
     ChangeStmt,
     ChooseExpr,
@@ -26,6 +27,7 @@ from saylang.ast_nodes import (
     ExprStmt,
     FailStmt,
     FieldAccess,
+    FileOpStmt,
     FlagExpr,
     FlagsDeclStmt,
     ForEachStmt,
@@ -33,12 +35,14 @@ from saylang.ast_nodes import (
     FuncDefStmt,
     IfStmt,
     ImportStmt,
+    InterpolatedString,
     ItemAccess,
     LibCallExpr,
     ListLiteral,
     Literal,
     MapLiteral,
     PipeExpr,
+    PositionStmt,
     Program,
     ReadFileExpr,
     ReadKeyExpr,
@@ -56,6 +60,7 @@ from saylang.ast_nodes import (
     WaitStmt,
     WhileStmt,
     WriteFileStmt,
+    find_live_time_options,
 )
 from saylang.errors import SayRuntimeError
 from saylang.parser import parse_source
@@ -135,6 +140,11 @@ _BUILTIN_FUNCS: dict[str, Callable[..., object]] = {
     "split": runtime.say_split,
     "replace": runtime.say_replace,
     "unique": runtime.say_unique,
+    "load_file": runtime.say_load_file,
+    "shell": runtime.say_shell,
+    "fetch": runtime.say_fetch,
+    "glob": runtime.say_glob,
+    "calc": runtime.say_calc,
 }
 
 
@@ -159,6 +169,7 @@ class Interpreter:
             runtime.say_set_cli_args(cli_args)
         self.global_env = Environment()
         self.env = self.global_env
+        self._in_live_loop = False
 
     def _write_stdout(self, text: str) -> None:
         line = text + "\n"
@@ -195,29 +206,114 @@ class Interpreter:
             self.source_lines = (
                 source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
             )
+        runtime.say_set_position(None)
         last_val: object = None
-        for stmt in program.statements:
+        last_val = self._exec_stmt_list(
+            program.statements, self.env, top_level=True
+        )
+        return last_val
+
+    def _exec_live_block(
+        self,
+        frame_stmts: list[Stmt],
+        live_opts: dict[str, Expr],
+        env: Environment,
+        top_level: bool,
+    ) -> object:
+        live_val = self._eval_expr(live_opts["live"], env)
+        if not runtime.say_is_truthy(live_val):
+            return self._exec_stmt_list(
+                frame_stmts, env, top_level=top_level, allow_live=False
+            )
+        interval_val: object = 1.0
+        if "interval" in live_opts:
+            interval_val = self._eval_expr(live_opts["interval"], env)
+        frames_expr = live_opts.get("frames") or live_opts.get("count")
+        max_frames: int | None = None
+        if frames_expr is not None:
+            fv = self._eval_expr(frames_expr, env)
+            if isinstance(fv, bool) or not isinstance(fv, (int, float)):
+                raise SayRuntimeError("Live frame count (--frames) must be a number.")
+            max_frames = max(int(fv), 1)
+        is_tty = bool(getattr(self.stdout, "isatty", lambda: False)())
+        effective_frames = 1 if (max_frames is None and not is_tty) else max_frames
+
+        orig_stdout = self.stdout
+        prev_live = self._in_live_loop
+        self._in_live_loop = True
+        last_val: object = None
+        frame_idx = 0
+        if is_tty:
+            runtime.say_cursor(False, orig_stdout)
+        try:
+            while effective_frames is None or frame_idx < effective_frames:
+                buf = io.StringIO()
+                self.stdout = buf
+                runtime.say_reset_pos_frame()
+                last_val = self._exec_stmt_list(
+                    frame_stmts, env, top_level=top_level, allow_live=False
+                )
+                runtime.say_live_write_frame(
+                    buf.getvalue(), orig_stdout, first=(frame_idx == 0)
+                )
+                frame_idx += 1
+                if effective_frames is not None and frame_idx >= effective_frames:
+                    break
+                runtime.say_sleep(interval_val)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.stdout = orig_stdout
+            self._in_live_loop = prev_live
+            if is_tty:
+                runtime.say_cursor(True, orig_stdout)
+        return last_val
+
+    def _exec_stmt_list(
+        self,
+        stmts: list[Stmt],
+        env: Environment,
+        *,
+        top_level: bool = False,
+        allow_live: bool = True,
+    ) -> object:
+        last_val: object = None
+        for idx, stmt in enumerate(stmts):
+            if allow_live and not self._in_live_loop:
+                live_opts = find_live_time_options(stmt)
+                if live_opts is not None:
+                    frame_stmts = [
+                        s for s in stmts[idx:] if not isinstance(s, FlagsDeclStmt)
+                    ]
+                    return self._exec_live_block(
+                        frame_stmts, live_opts, env, top_level
+                    )
             try:
-                last_val = self._exec_stmt(stmt, self.env)
+                last_val = self._exec_stmt(stmt, env)
             except _ReturnSignal as sig:
-                raise self._error(
-                    "'return' can only be used inside a function.",
-                    stmt.line,
-                    stmt.column,
-                ) from sig
+                if top_level:
+                    raise self._error(
+                        "'return' can only be used inside a function.",
+                        stmt.line,
+                        stmt.column,
+                    ) from sig
+                raise
             except _StopSignal as sig:
-                raise self._error(
-                    "'stop' can only be used inside a loop.", stmt.line, stmt.column
-                ) from sig
+                if top_level:
+                    raise self._error(
+                        "'stop' can only be used inside a loop.", stmt.line, stmt.column
+                    ) from sig
+                raise
             except _SkipSignal as sig:
-                raise self._error(
-                    "'skip' can only be used inside a loop.", stmt.line, stmt.column
-                ) from sig
+                if top_level:
+                    raise self._error(
+                        "'skip' can only be used inside a loop.", stmt.line, stmt.column
+                    ) from sig
+                raise
         return last_val
 
     def _exec_block(self, stmts: list[Stmt], env: Environment) -> None:
-        for stmt in stmts:
-            self._exec_stmt(stmt, env)
+        self._exec_stmt_list(stmts, env, top_level=False)
 
     def _assign_target(
         self, target: Expr, value: object, env: Environment
@@ -319,14 +415,61 @@ class Interpreter:
                 self._assign_target(stmt.target, updated, env)
                 return None
 
+            if isinstance(stmt, PositionStmt):
+                anc = (
+                    self._eval_expr(stmt.anchor, env)
+                    if stmt.anchor is not None
+                    else None
+                )
+                xv = self._eval_expr(stmt.x, env) if stmt.x is not None else None
+                yv = self._eval_expr(stmt.y, env) if stmt.y is not None else None
+                runtime.say_set_position(anchor=anc, x=xv, y=yv)
+                return None
+
+            if isinstance(stmt, FileOpStmt):
+                eval_args = [self._eval_expr(a, env) for a in stmt.args]
+                if stmt.op == "save":
+                    runtime.say_save_file(eval_args[0], eval_args[1])
+                elif stmt.op == "mkdir":
+                    runtime.say_mkdir(eval_args[0])
+                elif stmt.op == "delete":
+                    runtime.say_delete_file(eval_args[0])
+                elif stmt.op == "copy":
+                    runtime.say_copy_file(eval_args[0], eval_args[1])
+                elif stmt.op == "move":
+                    runtime.say_move_file(eval_args[0], eval_args[1])
+                return None
+
             if isinstance(stmt, SayStmt):
                 parts = [
                     runtime.say_to_text(self._eval_expr(v, env))
                     for v in stmt.values
                 ]
                 text = "".join(parts)
-                if stmt.position is not None:
-                    text = runtime.say_format_layout(text, stmt.position)
+                p_anchor = (
+                    self._eval_expr(stmt.pos_anchor, env)
+                    if stmt.pos_anchor is not None
+                    else None
+                )
+                p_x = self._eval_expr(stmt.pos_x, env) if stmt.pos_x is not None else None
+                p_y = self._eval_expr(stmt.pos_y, env) if stmt.pos_y is not None else None
+                if (
+                    stmt.position is not None
+                    or p_anchor is not None
+                    or p_x is not None
+                    or p_y is not None
+                    or (
+                        runtime._ACTIVE_POS != (None, None, None)
+                        and not runtime._POS_FRAME_USED
+                    )
+                ):
+                    text = runtime.say_format_layout(
+                        text,
+                        stmt.position,
+                        pos_anchor=p_anchor,
+                        pos_x=p_x,
+                        pos_y=p_y,
+                    )
                 runtime.say_record_print(text)
                 if stmt.color is not None or stmt.background is not None or stmt.styles:
                     color_val = (
@@ -545,6 +688,12 @@ class Interpreter:
             if isinstance(expr, Literal):
                 return expr.value
 
+            if isinstance(expr, InterpolatedString):
+                return "".join(
+                    runtime.say_to_text(self._eval_expr(part, env))
+                    for part in expr.parts
+                )
+
             if isinstance(expr, Var):
                 try:
                     return env.get(expr.name)
@@ -688,6 +837,23 @@ class Interpreter:
                 return runtime.say_choose(
                     opts,
                     prompt=prompt,
+                    input_fn=custom_input,
+                    stdout=self.stdout,
+                )
+
+            if isinstance(expr, ButtonsExpr):
+                opts = self._eval_expr(expr.options, env)
+                prompt = (
+                    runtime.say_to_text(self._eval_expr(expr.prompt, env))
+                    if expr.prompt is not None
+                    else "Buttons"
+                )
+                cols_val = self._eval_expr(expr.cols, env) if expr.cols is not None else 4
+                custom_input = None if self.input_fn is input else self.input_fn
+                return runtime.say_buttons(
+                    opts,
+                    prompt=prompt,
+                    cols=cols_val,
                     input_fn=custom_input,
                     stdout=self.stdout,
                 )

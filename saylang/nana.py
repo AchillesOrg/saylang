@@ -106,16 +106,39 @@ NANA_TEMPLATES: tuple[NanaTemplate, ...] = (
     NanaTemplate(
         id="live_clock",
         title="Live Ticking Clock",
-        description="Updates every second with clear screen and -d flag",
+        description="Centered live clock that updates every second with -d date",
         filename="live_clock.pl",
         code=(
             "# Run with -d to show date (Ctrl+C to stop)\n"
-            "import time, ascii\n\n"
-            "every 1 second\n"
-            "    clear screen\n"
-            "    print time --12h | ascii --size default colour cyan\n"
-            "    if flag -d then print date below time\n\n"
-            "flags: -d\n"
+            "import time, ascii\n"
+            "flags: -d\n\n"
+            "pos center\n"
+            "print time --12h --live | ascii --size default colour cyan\n"
+            "if flag -d then print date below time\n"
+        ),
+    ),
+    NanaTemplate(
+        id="mouse_calc",
+        title="Mouse TUI Calculator",
+        description="Clickable button grid calculator powered by buttons + calc",
+        filename="calc.pl",
+        code=(
+            'set keys to a list of "7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "C", "0", "=", "+", "Q"\n'
+            'set screen to ""\n'
+            "while true\n"
+            '    set btn to buttons "Calc: {screen}" from keys --cols 4\n'
+            '    if btn is "" or btn is "Q"\n'
+            "        stop\n"
+            '    if btn is "C"\n'
+            '        set screen to ""\n'
+            '    otherwise if btn is "="\n'
+            "        try\n"
+            '            set screen to "{calc screen}"\n'
+            "        if it fails with err\n"
+            '            set screen to "Error"\n'
+            "    otherwise\n"
+            '        set screen to "{screen}{btn}"\n'
+            'say "Result: {screen}" | box --title "Calculator"\n'
         ),
     ),
     NanaTemplate(
@@ -220,6 +243,21 @@ _KEYWORDS = {
     "remove",
     "write",
     "read",
+    "save",
+    "load",
+    "mkdir",
+    "rm",
+    "delete",
+    "cp",
+    "copy",
+    "mv",
+    "move",
+    "glob",
+    "shell",
+    "exec",
+    "fetch",
+    "pos",
+    "position",
     "file",
     "files",
     "exists",
@@ -229,6 +267,9 @@ _KEYWORDS = {
     "to_json",
     "from_json",
     "choose",
+    "buttons",
+    "calc",
+    "calculate",
     "key",
     "exit",
     "hide",
@@ -304,6 +345,14 @@ _LIBS_AND_VALUES = {
     "unique",
     "pad",
     "center",
+    "middle",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "grep",
+    "head",
+    "tail",
     "upper",
     "uppercase",
     "lower",
@@ -372,18 +421,20 @@ _BLOCK_OPENERS = (
     "try",
 )
 
-_CHEAT_SHEET = """SayLang Quick Reference
-───────────────────────
-Comments     # inline or full-line   |   note prose comment
-Variables    set score to 10         |   set name "Ada"
-Math         plus  minus  times  divided by  modulo
+_CHEAT_SHEET = """SayLang Plain-English Reference
+───────────────────────────────
+Comments     # note on its own line  |  note prose comment
+Variables    set score to 10         |  say "Score: {score}"
+Math         plus  minus  times  divided by  |  calc "2 + 3 * 4"
 Output       say "hi" colour red bold
-             print time --12h | ascii --size default
-Layout       print date below time   |   say "Hi" centered
-             clear screen  |  wait 1 second  |  every 1 second
-Flags        flags: -d, --name       |   if flag -d then ...
-Loops        for each i from 1 to 5  |   repeat 3 times
-Functions    to add with a and b     |   call add with 2, 3
+             print time --12h --live | ascii --size default
+Layout       pos center  |  pos top-right  |  pos 10, 5
+             print date below time  |  | box --title "Card"
+Menus        choose "Mode:" from keys  |  buttons from keys --cols 4
+Files/Bash   save cfg to "a.json"  |  load "a.json"  |  shell "ls"
+             lines | grep "err" | head 5  |  fetch "https://..."
+Flags        flags: -d, --name   |  set who to flag --name or "friend"
+Shortcuts    to add with a, b    |  "hi" | shout
 Errors       try ... if it fails with err ...
 
 nana Shortcuts

@@ -103,8 +103,10 @@ def tokenize(source: str) -> list[Token]:
             col = pos + 1
 
             if ch == '"':
-                text, pos = _read_string(line, pos, '"', line_no)
-                tok = Token(TokenType.STRING, text, line_no, col)
+                text, end_pos = _read_string(line, pos, '"', line_no)
+                raw_inner = line[pos + 1 : end_pos - 1]
+                pos = end_pos
+                tok = Token(TokenType.STRING, text, line_no, col, raw=raw_inner)
                 tokens.append(tok)
                 prev_token = tok
                 continue

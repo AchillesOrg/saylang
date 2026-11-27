@@ -89,33 +89,32 @@ LESSONS: tuple[Lesson, ...] = (
         number=1,
         id="01-styled-cards",
         track="Basics",
-        title="Styled Output & Boxes",
-        goal="Print styled text inside a terminal box card",
+        title="Boxes & Colour",
+        goal="Put words inside a colourful box on screen",
         explanation=(
-            "SayLang needs no parentheses or semicolons.\n"
-            "You can pipe any message through `| box --title \"...\"` and\n"
-            "colour/style output directly with `colour cyan bold`."
+            "Save any word with `set hero to \"...\"` and drop it into any double-quoted text with `{hero}`.\n"
+            "Use `|` (a pipe) to pass that message into `box` and `colour cyan bold`."
         ),
         example=(
             'set tool to "SayLang"\n'
-            'say "Ready with " plus tool | box --title "Status" | colour green bold'
+            'say "Ready with {tool}" | box --title "Status" | colour green bold'
         ),
         challenge=(
-            'Set `hero` to `"SayLang"` and print `"Hello, " plus hero plus "!"`\n'
-            'piped through `| box --title "Greeting" | colour cyan bold`.'
+            'Save `"SayLang"` in `hero`, then print `"Hello, {hero}!"`\n'
+            'inside `| box --title "Greeting" | colour cyan bold`.'
         ),
         starter=(
             'set hero to "SayLang"\n'
-            '# Pipe "Hello, " plus hero plus "!" into | box --title "Greeting" | colour cyan bold\n'
+            '# Change the line below to say "Hello, {hero}!" inside a cyan bold box titled "Greeting"\n'
             'say hero\n'
         ),
         solution=(
             'set hero to "SayLang"\n'
-            'say "Hello, " plus hero plus "!" | box --title "Greeting" | colour cyan bold\n'
+            'say "Hello, {hero}!" | box --title "Greeting" | colour cyan bold\n'
         ),
         hints=(
-            'Join text for a pipe with plus: "Hello, " plus hero plus "!"',
-            'Add | box --title "Greeting" | colour cyan bold at the end.',
+            'Use "{hero}" inside double quotes: say "Hello, {hero}!"',
+            'Add | box --title "Greeting" | colour cyan bold to the end of the line.',
         ),
         tests=(
             LessonTest(
@@ -129,11 +128,11 @@ LESSONS: tuple[Lesson, ...] = (
         number=2,
         id="02-decisions-pipes",
         track="Basics",
-        title="Decisions & Pipelines",
-        goal="Branch cleanly and transform text with pipes",
+        title="If & Otherwise",
+        goal="Choose what to print based on a number",
         explanation=(
-            "Blocks use 4 spaces and natural comparisons like `is at least`.\n"
-            "Combine branches with `| upper | box` to build clean CLI badges."
+            "Make choices in plain English with `if score is at least 90` and `otherwise`.\n"
+            "Indent the steps underneath by 4 spaces so SayLang knows they belong inside."
         ),
         example=(
             "if level is at least 10\n"
@@ -142,24 +141,18 @@ LESSONS: tuple[Lesson, ...] = (
             '    say "starter" | upper | box colour yellow'
         ),
         challenge=(
-            "Read `--score` with `flag --score` (default `80` when not set),\n"
-            "convert with `number of`, then print `grade: a` (>= 90),\n"
-            "`grade: b` (>= 75), or `grade: c` otherwise piped to `| upper | box`."
+            "Read `--score` (or use `80` as the backup), convert it to a number,\n"
+            "then print `\"grade: a\"` (90+), `\"grade: b\"` (75+), or `\"grade: c\"`\n"
+            "in uppercase inside a box (`| upper | box`)."
         ),
         starter=(
             "flags: --score\n"
-            "set raw to flag --score\n"
-            "if not raw\n"
-            '    set raw to "80"\n'
-            "set score to number of raw\n"
-            "# Print GRADE: A, GRADE: B, or GRADE: C inside a box\n"
+            "set score to number of (flag --score or 80)\n"
+            "# Check score and print GRADE: A, GRADE: B, or GRADE: C in a box\n"
         ),
         solution=(
             "flags: --score\n"
-            "set raw to flag --score\n"
-            "if not raw\n"
-            '    set raw to "80"\n'
-            "set score to number of raw\n"
+            "set score to number of (flag --score or 80)\n"
             "if score is at least 90\n"
             '    say "grade: a" | upper | box colour green\n'
             "otherwise if score is at least 75\n"
@@ -168,8 +161,8 @@ LESSONS: tuple[Lesson, ...] = (
             '    say "grade: c" | upper | box colour yellow\n'
         ),
         hints=(
-            "Use: if score is at least 90 / otherwise if score is at least 75 / otherwise",
-            'Each branch prints say "grade: ..." | upper | box',
+            "Start with: if score is at least 90",
+            'Inside each branch write: say "grade: ..." | upper | box',
         ),
         tests=(
             LessonTest(
@@ -192,43 +185,40 @@ LESSONS: tuple[Lesson, ...] = (
         number=3,
         id="03-cli-flags",
         track="CLI Tools",
-        title="CLI Flags & Options",
-        goal="Build a real command-line tool with -u and --name",
+        title="Command Options (-u, --name)",
+        goal="Let users customize your tool from the terminal",
         explanation=(
-            "`flags:` declares accepted CLI flags for `--help` and readability.\n"
-            "`flag --name` returns the argument value (or `false` if omitted),\n"
-            "while `flag -u` returns `true` when `-u` is passed."
+            "`flags: -u, --name` lets your script accept options like `--name Ada -u`.\n"
+            "Use `flag --name or \"friend\"` to grab the text (with a fallback if omitted),\n"
+            "and `if flag -u` to check if an option was turned on."
         ),
         example=(
             "flags: -v, --user\n"
-            'set who to flag --user\n'
-            'if flag -v then say "User: ", who'
+            'set who to flag --user or "guest"\n'
+            'if flag -v then say "Hi, {who}!"'
         ),
         challenge=(
-            "Declare `flags: -u, --name`. Default `person` to `\"friend\"`\n"
-            'when `--name` is missing. Build `"Hello, " plus person plus "!"`,\n'
-            "uppercase it if `flag -u` is set, and print it inside `| box`."
+            "Declare `flags: -u, --name`. Use `\"friend\"` when `--name` is missing.\n"
+            'Build `"Hello, {person}!"`, make it ALL CAPS when `-u` is passed,\n'
+            "and print it inside `| box`."
         ),
         starter=(
             "flags: -u, --name\n"
-            "set person to flag --name\n"
-            "if not person\n"
-            '    set person to "friend"\n'
-            "# Build msg, apply | upper when flag -u, then say msg | box\n"
+            'set person to flag --name or "friend"\n'
+            'set msg to "Hello, {person}!"\n'
+            "# Uppercase msg when flag -u is passed, then print msg | box\n"
         ),
         solution=(
             "flags: -u, --name\n"
-            "set person to flag --name\n"
-            "if not person\n"
-            '    set person to "friend"\n'
-            'set msg to "Hello, " plus person plus "!"\n'
+            'set person to flag --name or "friend"\n'
+            'set msg to "Hello, {person}!"\n'
             "if flag -u\n"
             "    set msg to msg | upper\n"
             "say msg | box\n"
         ),
         hints=(
-            "Update msg inside `if flag -u`: set msg to msg | upper",
-            "End with: say msg | box",
+            "Add: if flag -u  ->  set msg to msg | upper",
+            "Print at the end: say msg | box",
         ),
         tests=(
             LessonTest(
@@ -250,24 +240,26 @@ LESSONS: tuple[Lesson, ...] = (
     Lesson(
         number=4,
         id="04-functions-pipes",
-        track="Real Programs",
-        title="Functions & Custom Pipes",
-        goal="Write reusable functions and use them in `|` pipelines",
+        track="Shortcuts",
+        title="Make Your Own Shortcut",
+        goal="Create a reusable action and use it after |",
         explanation=(
-            "Define functions with `to <name> with <param>` and `give back <val>`.\n"
-            "Any function you define can also be used directly as a `|` pipe stage!"
+            "Save steps you repeat into your own command with `to <name> with <word>`\n"
+            "and send back the finished result using `give back`.\n"
+            "Once made, you can use it anywhere after `|`, just like `| upper`!"
         ),
         example=(
-            "to shout with text\n"
-            '    give back (text | upper) plus "!!!"\n'
+            "to shout with words\n"
+            '    give back "{words | upper}!!!"\n\n'
             'say "ship it" | shout'
         ),
         challenge=(
-            "Define `to card with title` that returns `title | upper | box --width 20`.\n"
+            "Make your own shortcut `to card with title` that gives back\n"
+            '`title | upper | box --width 20`.\n'
             'Then print `"build passing" | card`.'
         ),
         starter=(
-            "# Define `to card with title` returning title | upper | box --width 20\n"
+            "# Make a shortcut named `card` taking `title`, then print \"build passing\" | card\n"
             'say "build passing"\n'
         ),
         solution=(
@@ -276,8 +268,8 @@ LESSONS: tuple[Lesson, ...] = (
             'say "build passing" | card\n'
         ),
         hints=(
-            "Inside `to card with title`: give back title | upper | box --width 20",
-            'Call it via pipe: say "build passing" | card',
+            "Write: to card with title",
+            "Indented 4 spaces inside: give back title | upper | box --width 20",
         ),
         tests=(
             LessonTest(
@@ -289,13 +281,13 @@ LESSONS: tuple[Lesson, ...] = (
     Lesson(
         number=5,
         id="05-lists-maps-tables",
-        track="Data & CLI",
-        title="Lists, Maps & Tables",
-        goal="Format structured records into clean terminal tables",
+        track="Tables & Data",
+        title="Lists & Tables",
+        goal="Organize items into a neat terminal table",
         explanation=(
-            "Create records using `a map with key as value` and read fields\n"
-            "with possessive syntax (`task's name`). Pipe a list of maps into\n"
-            "`| table` to render a crisp Unicode CLI table immediately!"
+            "Group named details into a card with `a map with task as \"...\", status as \"...\"`.\n"
+            "Put cards together with `a list of ...` and send them into `| table`\n"
+            "to draw neat rows and columns automatically!"
         ),
         example=(
             'set row1 to a map with name as "API", state as "up"\n'
@@ -303,13 +295,13 @@ LESSONS: tuple[Lesson, ...] = (
             "say a list of row1, and row2 | table"
         ),
         challenge=(
-            "Create two task maps with keys `task` and `status`: one with\n"
-            '`"Learn SayLang"` / `"done"` and one with `"Ship CLI"` / `"next"`.\n'
-            "Print the list piped through `| table`."
+            "Make two task cards (`t1` and `t2`) with `task` and `status`:\n"
+            '`"Learn SayLang"` / `"done"` and `"Ship CLI"` / `"next"`.\n'
+            "Put both in a list and print them through `| table`."
         ),
         starter=(
             'set t1 to a map with task as "Learn SayLang", status as "done"\n'
-            "# Create t2 and print both as a table\n"
+            "# Make t2, put both in a list, and print with | table\n"
         ),
         solution=(
             'set t1 to a map with task as "Learn SayLang", status as "done"\n'
@@ -318,8 +310,8 @@ LESSONS: tuple[Lesson, ...] = (
             "say tasks | table\n"
         ),
         hints=(
-            'Create t2: set t2 to a map with task as "Ship CLI", status as "next"',
-            "Print with: say a list of t1, and t2 | table",
+            'Make t2: set t2 to a map with task as "Ship CLI", status as "next"',
+            "Print: say a list of t1, and t2 | table",
         ),
         tests=(
             LessonTest(
@@ -331,48 +323,36 @@ LESSONS: tuple[Lesson, ...] = (
     Lesson(
         number=6,
         id="06-progress-tui",
-        track="TUI Building",
-        title="Progress Bars & Cards",
-        goal="Build clean TUI status meters and aligned panels",
+        track="TUI Apps",
+        title="Progress Bars",
+        goal="Show live progress gauges in the terminal",
         explanation=(
-            "SayLang has built-in TUI widgets: `bar done of total`, `rule --title`,\n"
-            "`below`, and `box --title`. Combine them to make rich dashboards."
+            "Draw a ready-made progress meter with `bar done of total --width 10 --label \"...\"`.\n"
+            "Pipe it into `| box --title \"...\"` for a clean status card."
         ),
         example=(
             'say bar 3 of 4 --width 16 --label "Build" | box --title "CI"'
         ),
         challenge=(
-            "Read `--done` (default `3`) and `--total` (default `5`), convert\n"
-            "both with `number of`, then print `bar done of total --width 10 --label \"Done\"`\n"
+            "Read `--done` (default `3`) and `--total` (default `5`), turn them\n"
+            'into numbers, and print `bar done of total --width 10 --label "Done"`\n'
             'inside `| box --title "Progress"`.'
         ),
         starter=(
             "flags: --done, --total\n"
-            "set d_raw to flag --done\n"
-            "if not d_raw\n"
-            '    set d_raw to "3"\n'
-            "set t_raw to flag --total\n"
-            "if not t_raw\n"
-            '    set t_raw to "5"\n'
-            "set done_n to number of d_raw\n"
-            "set total_n to number of t_raw\n"
-            "# Render bar done_n of total_n --width 10 --label \"Done\" | box --title \"Progress\"\n"
+            "set done_n to number of (flag --done or 3)\n"
+            "set total_n to number of (flag --total or 5)\n"
+            "# Print bar done_n of total_n --width 10 --label \"Done\" | box --title \"Progress\"\n"
         ),
         solution=(
             "flags: --done, --total\n"
-            "set d_raw to flag --done\n"
-            "if not d_raw\n"
-            '    set d_raw to "3"\n'
-            "set t_raw to flag --total\n"
-            "if not t_raw\n"
-            '    set t_raw to "5"\n'
-            "set done_n to number of d_raw\n"
-            "set total_n to number of t_raw\n"
+            "set done_n to number of (flag --done or 3)\n"
+            "set total_n to number of (flag --total or 5)\n"
             'say bar done_n of total_n --width 10 --label "Done" | box --title "Progress"\n'
         ),
         hints=(
-            'Syntax: bar done_n of total_n --width 10 --label "Done"',
-            'Pipe it into | box --title "Progress"',
+            'Write: bar done_n of total_n --width 10 --label "Done"',
+            'Add | box --title "Progress" on the same line.',
         ),
         tests=(
             LessonTest(
@@ -389,34 +369,34 @@ LESSONS: tuple[Lesson, ...] = (
     Lesson(
         number=7,
         id="07-interactive-menus",
-        track="TUI Building",
-        title="Interactive TUI Menus",
-        goal="Ask for input and render arrow-key `choose` menus",
+        track="TUI Apps",
+        title="Menus You Can Pick",
+        goal="Ask a question and show an arrow/mouse menu",
         explanation=(
-            "`ask` reads user text and `choose \"Prompt\" from <list>` launches an\n"
-            "interactive arrow-key selector in a TTY (or clean numbered menu in pipes)."
+            "`ask` lets someone type an answer, and `choose \"Pick:\" from <list>` pops up\n"
+            "a menu they can move through with arrow keys or mouse wheel."
         ),
         example=(
-            'set env_mode to choose "Target:" from a list of "dev", "prod"\n'
-            'say "Deploying to " plus env_mode | box'
+            'set target to choose "Target:" from a list of "dev", "prod"\n'
+            'say "Going to {target}" | box'
         ),
         challenge=(
-            'Ask `"Project name? "` into `project`, then let the user pick `mode`\n'
-            'via `choose "Mode:" from a list of "cli", "tui", and "daemon"`.\n'
-            'Print `project plus " -> " plus mode | box`.'
+            'Ask `"Project name? "` and save it in `project`.\n'
+            'Then let the user pick `mode` using `choose "Mode:" from a list of "cli", "tui", and "daemon"`.\n'
+            'Print `"{project} -> {mode}" | box`.'
         ),
         starter=(
             'set project to ask "Project name? "\n'
-            "# Let the user choose mode from cli, tui, daemon and print a boxed summary\n"
+            "# Pick mode from cli, tui, daemon and print \"{project} -> {mode}\" | box\n"
         ),
         solution=(
             'set project to ask "Project name? "\n'
             'set mode to choose "Mode:" from a list of "cli", "tui", and "daemon"\n'
-            'say project plus " -> " plus mode | box\n'
+            'say "{project} -> {mode}" | box\n'
         ),
         hints=(
             'Use: set mode to choose "Mode:" from a list of "cli", "tui", and "daemon"',
-            'Then: say project plus " -> " plus mode | box',
+            'Then: say "{project} -> {mode}" | box',
         ),
         tests=(
             LessonTest(
@@ -434,50 +414,49 @@ LESSONS: tuple[Lesson, ...] = (
     Lesson(
         number=8,
         id="08-files-json-errors",
-        track="Real Programs",
-        title="Files, JSON & Error Recovery",
-        goal="Persist structured JSON files safely with try/if it fails",
+        track="Files & Safety",
+        title="Save, Load & Mistakes",
+        goal="Save info to disk, load it back, and catch missing files",
         explanation=(
-            "Real CLI tools save state to disk using `| json` and `write ... to file`,\n"
-            "reload it with `read file` + `parse json`, and guard missing files with\n"
-            "`file exists` or `try ... if it fails with err`."
+            "Save any card or list to a file with `save data to \"app.json\"`, and load it\n"
+            "right back with `load \"app.json\"`. Read a saved field with `data's app`.\n"
+            "When a file might be missing, wrap it in `try` / `if it fails with err` so your app never crashes."
         ),
         example=(
             'set cfg to a map with host as "localhost", port as 8080\n'
-            'write cfg | json to file "settings.json"\n'
-            'set loaded to parse json (read file "settings.json")\n'
+            'save cfg to "settings.json"\n'
+            'set loaded to load "settings.json"\n'
             "say loaded's host"
         ),
         challenge=(
-            'Save a map `cfg` (`app as "saylang"`, `port as 9000`) as JSON to `"app.json"`.\n'
-            'Check `if file exists "app.json"`, read and `parse json` into `data`, and print\n'
-            '`"Loaded: ", data\'s app, ":", data\'s port`.\n'
-            'Also wrap `read file "missing.json"` in `try / if it fails with err` and print `"Caught missing"`.'
+            'Save `cfg` (`app as "saylang"`, `port as 9000`) to `"app.json"` using `save`.\n'
+            'If `file exists "app.json"`, `load "app.json"` into `data` and print `"Loaded: {data\'s app}:{data\'s port}"`.\n'
+            'Then try reading `"missing.json"` inside `try / if it fails with err` and print `"Caught missing"`.'
         ),
         starter=(
             'set cfg to a map with app as "saylang", port as 9000\n'
-            '# 1. Write cfg | json to file "app.json"\n'
-            '# 2. Read and parse json if file exists "app.json"\n'
+            '# 1. Save cfg to "app.json"\n'
+            '# 2. If file exists "app.json", load it into data and print "Loaded: {data\'s app}:{data\'s port}"\n'
             '# 3. Try reading "missing.json" and catch the error\n'
         ),
         solution=(
             'set cfg to a map with app as "saylang", port as 9000\n'
-            'write cfg | json to file "app.json"\n'
+            'save cfg to "app.json"\n'
             'if file exists "app.json"\n'
-            '    set data to parse json (read file "app.json")\n'
-            '    say "Loaded: ", data\'s app, ":", data\'s port\n'
+            '    set data to load "app.json"\n'
+            '    say "Loaded: {data\'s app}:{data\'s port}"\n'
             "try\n"
-            '    set x to read file "missing.json"\n'
+            '    set x to read "missing.json"\n'
             "if it fails with err\n"
             '    say "Caught missing"\n'
         ),
         hints=(
-            'Write JSON with: write cfg | json to file "app.json"',
-            'Parse back with: set data to parse json (read file "app.json")',
+            'Save with: save cfg to "app.json"  and load with: set data to load "app.json"',
+            'Handle missing files with: try / set x to read "missing.json" / if it fails with err / say "Caught missing"',
         ),
         tests=(
             LessonTest(
-                description="Writes JSON, parses fields back, and catches missing file error",
+                description="Saves & loads JSON cleanly and catches missing file",
                 expect_contains=("Loaded: saylang:9000", "Caught missing"),
                 use_temp_dir=True,
             ),
@@ -486,62 +465,200 @@ LESSONS: tuple[Lesson, ...] = (
     Lesson(
         number=9,
         id="09-tty-clock",
-        track="CLI + TUI",
-        title="Big-Letter TTY Clock",
-        goal="Combine stdlib time, ascii art, below alignment, and flags",
+        track="TUI Apps",
+        title="Live Centered Clock",
+        goal="Put a live big-letter clock dead center on your screen",
         explanation=(
-            "Prebuilt modules (`time`, `ascii`, `color`, `flags`, `tty`) let you compose\n"
-            "complete terminal utilities in four readable lines of SayLang."
+            "`pos center` puts your clock in the middle of the screen (you can also use\n"
+            "`top-left`, `top-right`, `bottom`, or `10, 5`). Adding `--live` to `time`\n"
+            "keeps it ticking smoothly every second without flicker!"
         ),
         example=(
             "import time, ascii\n"
-            "print time --12h | ascii --size default colour cyan\n"
-            "if flag -d then print date below time\n"
-            "flags: -d"
+            "flags: -d\n"
+            "pos center\n"
+            "print time --12h --live | ascii --size default colour cyan\n"
+            "if flag -d then print date below time"
         ),
         challenge=(
-            "Import `time, ascii`, print `time --12h | ascii --size small colour cyan`,\n"
-            "and when `flag -d` is passed, print `date below time`.\n"
-            "Declare `flags: -d`."
+            "Import `time, ascii`, set `pos center`, and print\n"
+            "`time --12h --live | ascii --size small colour cyan`.\n"
+            "When `flag -d` is passed, `print date below time`."
         ),
         starter=(
             "import time, ascii\n"
             "flags: -d\n"
-            "# Print big-letter time and optional centered date below it\n"
+            "# Center on screen and print a live small-ascii cyan clock (+ date below when -d)\n"
         ),
         solution=(
             "import time, ascii\n"
-            "print time --12h | ascii --size small colour cyan\n"
+            "pos center\n"
+            "print time --12h --live | ascii --size small colour cyan\n"
             "if flag -d then print date below time\n"
             "flags: -d\n"
         ),
         hints=(
-            "Use `| ascii --size small` on `time --12h`.",
-            "Add: if flag -d then print date below time",
+            "Put `pos center` on its own line before printing time.",
+            "Print: print time --12h --live | ascii --size small colour cyan",
         ),
         tests=(
             LessonTest(
-                description="Default run prints big block-letter time",
+                description="Default run draws centered block-letter clock",
                 expect_contains=("█",),
                 expect_ansi=True,
             ),
             LessonTest(
-                description="-d flag adds current date below time",
-                cli_args=("--size", "small", "-d"),
+                description="-d flag adds today's date centered under the clock",
+                cli_args=("-d",),
                 expect_contains=("█", "20"),
             ),
         ),
     ),
     Lesson(
         number=10,
-        id="10-capstone-cruncher",
-        track="Capstone",
-        title="Capstone: Number Cruncher CLI",
-        goal="Build a fault-tolerant CLI stats cruncher with tables & bars",
+        id="10-cli-calculator",
+        track="Calculators",
+        title="CLI Calculator",
+        goal="Build an interactive terminal calculator in plain English",
         explanation=(
-            "Inspired by Kestral Lesson 13! Combine loops, `ask`, `try / if it fails`,\n"
-            "lists, maps, math pipes (`| sum`, `| min`, `| max`, `| average`), `| table`,\n"
-            "`bar`, and CLI flags into a real data-crunching terminal tool."
+            "Ask for two numbers and an operation (`+`, `-`, `*`, `/`), check division\n"
+            "by zero with an `if`, and print the finished answer inside a box."
+        ),
+        example=(
+            'set a to number of (ask "First number: ")\n'
+            'set b to number of (ask "Second number: ")\n'
+            'say "{a} + {b} = {a + b}" | box'
+        ),
+        challenge=(
+            'Ask `"First number: "` into `a` (`number of`), `"Operation (+, -, *, /): "` into `op`,\n'
+            'and `"Second number: "` into `b` (`number of`).\n'
+            'Compute `ans` for `+`, `-`, `*`, `/` (if dividing by `0`, print `"Cannot divide by zero."` in red);\n'
+            'otherwise print `"{a} {op} {b} = {ans}" | box --title "Calculator"`.'
+        ),
+        starter=(
+            'set a to number of (ask "First number: ")\n'
+            'set op to trimmed of (ask "Operation (+, -, *, /): ")\n'
+            'set b to number of (ask "Second number: ")\n'
+            "# Calculate ans and print \"{a} {op} {b} = {ans}\" | box --title \"Calculator\"\n"
+        ),
+        solution=(
+            'set a to number of (ask "First number: ")\n'
+            'set op to trimmed of (ask "Operation (+, -, *, /): ")\n'
+            'set b to number of (ask "Second number: ")\n'
+            'if op is "+" or op is "plus"\n'
+            "    set ans to a + b\n"
+            '    say "{a} + {b} = {ans}" | box --title "Calculator"\n'
+            'otherwise if op is "-" or op is "minus"\n'
+            "    set ans to a - b\n"
+            '    say "{a} - {b} = {ans}" | box --title "Calculator"\n'
+            'otherwise if op is "*" or op is "times"\n'
+            "    set ans to a * b\n"
+            '    say "{a} * {b} = {ans}" | box --title "Calculator"\n'
+            'otherwise if op is "/"\n'
+            "    if b is 0\n"
+            '        say "Cannot divide by zero." colour red\n'
+            "    otherwise\n"
+            "        set ans to a / b\n"
+            '        say "{a} / {b} = {ans}" | box --title "Calculator"\n'
+            "otherwise\n"
+            '    say "Unknown operation: {op}" colour red\n'
+        ),
+        hints=(
+            'Handle each op cleanly: if op is "+"  ->  set ans to a + b',
+            'When op is "/", check `if b is 0` before computing `a / b`.',
+        ),
+        tests=(
+            LessonTest(
+                description="Adds 12 + 8 to 20 inside Calculator box",
+                input_lines=("12", "+", "8"),
+                expect_contains=("Calculator", "12 + 8 = 20"),
+            ),
+            LessonTest(
+                description="Multiplies 6 * 7 to 42",
+                input_lines=("6", "*", "7"),
+                expect_contains=("6 * 7 = 42",),
+            ),
+            LessonTest(
+                description="Guards divide by zero safely",
+                input_lines=("9", "/", "0"),
+                expect_contains=("Cannot divide by zero.",),
+            ),
+        ),
+    ),
+    Lesson(
+        number=11,
+        id="11-mouse-tui-calc",
+        track="Calculators",
+        title="Mouse TUI Calculator",
+        goal="Build a clickable button calculator with mouse support",
+        explanation=(
+            "`buttons \"Calc: {screen}\" from keys --cols 4` draws a clickable 4-column button grid\n"
+            "in the middle of your terminal! Use `calc screen` to safely solve the typed math\n"
+            "(and `try / if it fails` to show `\"Error\"` if someone divides by zero)."
+        ),
+        example=(
+            'set keys to a list of "1", "2", "+", "=", "Q"\n'
+            'set pick to buttons "Tap a key:" from keys --cols 3\n'
+            'say "You clicked {pick}"'
+        ),
+        challenge=(
+            'Make `keys` = `"7","8","9","/","4","5","6","*","1","2","3","-","C","0","=","+","Q"` and `screen = ""`.\n'
+            'Loop with `while true`, asking `set btn to buttons "Calc: {screen}" from keys --cols 4`.\n'
+            'If `btn` is `""` or `"Q"`, `stop`. If `"C"`, clear `screen`. If `"="`, use `try` + `calc screen`\n'
+            'into `screen` (on error set `"Error"`). Otherwise add `{btn}` onto `screen`.\n'
+            'After stopping, print `"Result: {screen}" | box --title "Calculator"`.'
+        ),
+        starter=(
+            'set keys to a list of "7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "C", "0", "=", "+", "Q"\n'
+            'set screen to ""\n'
+            "# Loop clickable `buttons \"Calc: {screen}\" from keys --cols 4` until \"Q\" or \"\"\n"
+            'say "Result: {screen}" | box --title "Calculator"\n'
+        ),
+        solution=(
+            'set keys to a list of "7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "C", "0", "=", "+", "Q"\n'
+            'set screen to ""\n'
+            "while true\n"
+            '    set btn to buttons "Calc: {screen}" from keys --cols 4\n'
+            '    if btn is "" or btn is "Q"\n'
+            "        stop\n"
+            '    if btn is "C"\n'
+            '        set screen to ""\n'
+            '    otherwise if btn is "="\n'
+            "        try\n"
+            '            set screen to "{calc screen}"\n'
+            "        if it fails with err\n"
+            '            set screen to "Error"\n'
+            "    otherwise\n"
+            '        set screen to "{screen}{btn}"\n'
+            'say "Result: {screen}" | box --title "Calculator"\n'
+        ),
+        hints=(
+            'Ask for clicks inside the loop: set btn to buttons "Calc: {screen}" from keys --cols 4',
+            'Solve on "=" with: try -> set screen to "{calc screen}" -> if it fails with err -> set screen to "Error"',
+        ),
+        tests=(
+            LessonTest(
+                description="Clicking 7, +, 5, =, Q computes 12",
+                input_lines=("7", "+", "5", "=", "Q"),
+                expect_contains=("Result: 12", "Calculator"),
+            ),
+            LessonTest(
+                description="Clicking 1, /, 0, =, Q catches zero division as Error",
+                input_lines=("1", "/", "0", "=", "Q"),
+                expect_contains=("Result: Error",),
+            ),
+        ),
+    ),
+    Lesson(
+        number=12,
+        id="12-capstone-cruncher",
+        track="Final Project",
+        title="Number Cruncher Tool",
+        goal="Put loops, errors, tables & bars together in one app",
+        explanation=(
+            "Inspired by Kestral's final challenge! Let the user enter numbers one by one,\n"
+            "skip bad entries safely with `try / if it fails`, and show the finished stats\n"
+            "in a summary table and bar."
         ),
         example=(
             "set nums to a list of 10, 20, 30\n"
@@ -549,12 +666,12 @@ LESSONS: tuple[Lesson, ...] = (
         ),
         challenge=(
             "1. Declare `flags: --compact` and start `set nums to an empty list`.\n"
-            '2. Loop with `while true`: ask `"Number (or done): "`; `stop` if trimmed input is `"done"` or `""`.\n'
-            '3. Convert input with `try` + `number of` and `add` to `nums`; on error print `"Skipping invalid: ", raw colour red`.\n'
+            '2. Loop with `while true`: ask `"Number (or done): "`; `stop` on `"done"` or `""`.\n'
+            '3. Turn input into a number with `try` + `number of` and `add` to `nums`; on mistake print `"Skipping invalid: {raw}" colour red`.\n'
             '4. If `nums` is empty print `"No numbers entered."`.\n'
-            "5. Otherwise compute `total` (`| sum`), `low` (`| min`), `high` (`| max`), `avg` (`| average`),\n"
-            '   render a table of maps (`metric`, `value`) piped through `| box --title "Number Cruncher"`,\n'
-            '   and unless `flag --compact` is set, also print `bar length of nums of 10 --label "Samples"`.'
+            "5. Otherwise find `total` (`| sum`), `low` (`| min`), `high` (`| max`), `avg` (`| average`),\n"
+            '   make a table of `metric` / `value` cards piped to `| table | box --title "Number Cruncher"`,\n'
+            '   and unless `flag --compact` is set, also print `bar length of nums of 10 --width 10 --label "Samples"`.'
         ),
         starter=(
             "flags: --compact\n"
@@ -567,11 +684,11 @@ LESSONS: tuple[Lesson, ...] = (
             "        set n to number of raw\n"
             "        add n to nums\n"
             "    if it fails with err\n"
-            '        say "Skipping invalid: ", raw colour red\n\n'
+            '        say "Skipping invalid: {raw}" colour red\n\n'
             "if length of nums is 0\n"
             '    say "No numbers entered."\n'
             "otherwise\n"
-            "    # Build summary maps (metric/value), print table inside box, and sample bar\n"
+            "    # Build metric/value summary table inside Number Cruncher box + Samples bar\n"
         ),
         solution=(
             "flags: --compact\n"
@@ -584,7 +701,7 @@ LESSONS: tuple[Lesson, ...] = (
             "        set n to number of raw\n"
             "        add n to nums\n"
             "    if it fails with err\n"
-            '        say "Skipping invalid: ", raw colour red\n\n'
+            '        say "Skipping invalid: {raw}" colour red\n\n'
             "if length of nums is 0\n"
             '    say "No numbers entered."\n'
             "otherwise\n"
@@ -604,7 +721,7 @@ LESSONS: tuple[Lesson, ...] = (
         ),
         hints=(
             "Compute stats with: nums | sum, nums | min, nums | max, nums | average",
-            'Put metric/value maps in a list and print: report | table | box --title "Number Cruncher"',
+            'Put metric/value cards in a list and print: report | table | box --title "Number Cruncher"',
         ),
         tests=(
             LessonTest(
@@ -827,7 +944,7 @@ def render_lesson_map(
     if rows >= 17:
         lines.append("")
         lines.append(f"{margin}{_BOLD}SayLang Interactive Course{_RESET}  {_GRAY}{bar}{_RESET}")
-        lines.append(f"{margin}{_GRAY}Learn by building real CLI tools, JSON workflows & TUI apps{_RESET}")
+        lines.append(f"{margin}{_GRAY}Learn by building real terminal apps in plain English{_RESET}")
         lines.append("")
     else:
         lines.append(f"{margin}{_BOLD}Curriculum{_RESET} {_GRAY}{bar}{_RESET}")
@@ -1323,8 +1440,9 @@ def run_learn(
                             break
                         else:
                             _show_overlay(
-                                "COURSE COMPLETE! All 10 Lessons Passed!",
+                                f"COURSE COMPLETE! All {len(LESSONS)} Lessons Passed!",
                                 summary + "\n\nYou mastered CLI & TUI building in SayLang!",
+                                bg_mode=bg_state[0],
                             )
                     else:
                         passed_n = sum(1 for r in results if r.passed)

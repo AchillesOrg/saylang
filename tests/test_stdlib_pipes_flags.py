@@ -145,6 +145,83 @@ class TestStdlibPipesFlags(unittest.TestCase):
         self.assertIn("score", captured_kwargs.get("context_vars", []))  # type: ignore[operator]
         self.assertIn("7\n", out.getvalue())
 
+    def test_interpolation_pos_live_calc_save_load_and_bash_pipes(self) -> None:
+        import os
+        import shutil
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prev = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                src = (
+                    'set hero to "Ada"\n'
+                    'set m to a map with name as "Ada", score as 42\n'
+                    'say "Hi {hero}, {m\'s score} -> {hero | upper}, literal \\{x\\}"\n'
+                    "say 'raw {hero}'\n"
+                    'save m to "user.json"\n'
+                    'set loaded to load "user.json"\n'
+                    'say "Loaded {loaded\'s name}:{loaded\'s score}"\n'
+                    'make folder "sub"\n'
+                    'copy "user.json" to "sub/u2.json"\n'
+                    'move "sub/u2.json" to "sub/u3.json"\n'
+                    'say glob "sub/*.json"\n'
+                    'rm "sub"\n'
+                    'set logs to a list of "info ok", "ERROR disk", "info done", "error net"\n'
+                    'say logs | grep -i "error" | head 1\n'
+                    'say logs | tail 1\n'
+                    'say calc "2 + 3 * 4"\n'
+                    'say "10 / 2" | calc\n'
+                    "with_flags:\n"
+                )
+                # Strip last dummy label if unused; run clean block:
+                src = src.replace("with_flags:\n", "")
+                out, _ = run_and_capture(src)
+                self.assertIn("Hi Ada, 42 -> ADA, literal {x}", out)
+                self.assertIn("raw {hero}", out)
+                self.assertIn("Loaded Ada:42", out)
+                self.assertIn("u3.json", out)
+                self.assertIn("['ERROR disk']".replace("'", '"'), out)
+                self.assertIn("error net", out)
+                self.assertIn("\n14\n", out)
+                self.assertIn("\n5\n", out)
+            finally:
+                os.chdir(prev)
+
+        # `pos center`, `pos top-right`, `pos 10, 5`, `| pos center`, `date below time`
+        with patch("saylang.runtime.shutil.get_terminal_size", return_value=os.terminal_size((80, 24))):
+            out_pos, _ = run_and_capture(
+                "import time, ascii\n"
+                "pos center\n"
+                "print time --12h | ascii --size small\n"
+                "print date below time\n"
+            )
+            lines = out_pos.splitlines()
+            # Vertically centered for 24 rows (block_h=3 -> top_pad=10 empty lines before clock row 1)
+            clock_rows = [ln for ln in lines if "█" in ln]
+            self.assertEqual(len(clock_rows), 3)
+            clock_indent = len(clock_rows[0]) - len(clock_rows[0].lstrip(" "))
+            date_indent = len(lines[-1]) - len(lines[-1].lstrip(" "))
+            self.assertGreater(clock_indent, 5)
+            self.assertGreaterEqual(date_indent, clock_indent)
+
+            out_xy, _ = run_and_capture('say "Hi" pos 6, 3\n')
+            self.assertEqual(out_xy, "\n\n     Hi\n")
+
+            out_pipe_pos, _ = run_and_capture('say "TR" | pos top-right\n')
+            self.assertTrue(out_pipe_pos.endswith(" " * 78 + "TR\n"))
+
+            # Non-TTY `time --live` renders 1 frame without hanging
+            out_non_tty, _ = run_and_capture("print time --live\n")
+            self.assertRegex(out_non_tty.strip(), r"^\d{2}:\d{2}:\d{2}$")
+
+            # Explicit --frames 2 --interval 0 renders 2 frames cleanly
+            out_two, _ = run_and_capture("print time --live --interval 0 --frames 2\n")
+            self.assertEqual(len(out_two.strip().splitlines()), 2)
+
+            # Reset shutil stub clean
+            self.assertIsNotNone(shutil.get_terminal_size)
+
 
 if __name__ == "__main__":
     unittest.main()

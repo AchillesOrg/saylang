@@ -7,6 +7,7 @@ from saylang.ast_nodes import (
     AskExpr,
     BinaryOp,
     BuiltinExpr,
+    ButtonsExpr,
     CallExpr,
     ChangeStmt,
     ChooseExpr,
@@ -20,6 +21,7 @@ from saylang.ast_nodes import (
     ExprStmt,
     FailStmt,
     FieldAccess,
+    FileOpStmt,
     FlagExpr,
     FlagsDeclStmt,
     ForEachStmt,
@@ -28,12 +30,14 @@ from saylang.ast_nodes import (
     IfBranch,
     IfStmt,
     ImportStmt,
+    InterpolatedString,
     ItemAccess,
     LibCallExpr,
     ListLiteral,
     Literal,
     MapLiteral,
     PipeExpr,
+    PositionStmt,
     Program,
     ReadFileExpr,
     ReadKeyExpr,
@@ -131,6 +135,8 @@ _LIB_COMMANDS = {
     "ascii",
     "box",
     "center",
+    "pos",
+    "position",
     "bar",
     "table",
     "rule",
@@ -140,6 +146,21 @@ _LIB_COMMANDS = {
     "min",
     "max",
     "average",
+}
+
+_POS_ANCHOR_WORDS = {
+    "center",
+    "centre",
+    "middle",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "reset",
+    "default",
+    "normal",
+    "hcenter",
+    "hcentre",
 }
 
 _CURRENT_TIME_ATTRS = {
@@ -164,6 +185,8 @@ _FLAG_VALUE_STOP_WORDS = {
     "below",
     "centered",
     "centred",
+    "pos",
+    "position",
     "colour",
     "color",
     "on",
@@ -340,6 +363,77 @@ class Parser:
                 return self._parse_let()
             if w in ("increase", "decrease"):
                 return self._parse_change(w)
+            if w in ("pos", "position") and (
+                self._at_word("at", 1)
+                or self._peek(1).type in (TokenType.FLAG, TokenType.NUMBER, TokenType.STRING, TokenType.LPAREN)
+                or (
+                    self._peek(1).type == TokenType.WORD
+                    and self._peek(1).lower in _POS_ANCHOR_WORDS
+                )
+            ):
+                self._advance()
+                pos_anchor, pos_x, pos_y = self._parse_position_spec()
+                self._expect_end_of_statement()
+                return PositionStmt(
+                    line=tok.line, column=tok.column, anchor=pos_anchor, x=pos_x, y=pos_y
+                )
+            if w == "save" and self._can_follow_prefix_cmd(1):
+                self._advance()
+                val_expr = self._parse_expr()
+                self._consume_word("to", "Expected 'to' in 'save' statement.")
+                if self._at_word("file"):
+                    self._advance()
+                path_expr = self._parse_expr()
+                self._expect_end_of_statement()
+                return FileOpStmt(
+                    line=tok.line, column=tok.column, op="save", args=[path_expr, val_expr]
+                )
+            if w == "mkdir" and self._can_follow_prefix_cmd(1):
+                self._advance()
+                path_expr = self._parse_expr()
+                self._expect_end_of_statement()
+                return FileOpStmt(line=tok.line, column=tok.column, op="mkdir", args=[path_expr])
+            if self._at_words("make", "folder") and self._can_follow_prefix_cmd(2):
+                self._advance()
+                self._advance()
+                path_expr = self._parse_expr()
+                self._expect_end_of_statement()
+                return FileOpStmt(line=tok.line, column=tok.column, op="mkdir", args=[path_expr])
+            if w in ("rm", "delete") and (
+                self._at_word("file", 1) or self._can_follow_prefix_cmd(1)
+            ):
+                self._advance()
+                if self._at_word("file"):
+                    self._advance()
+                path_expr = self._parse_expr()
+                self._expect_end_of_statement()
+                return FileOpStmt(line=tok.line, column=tok.column, op="delete", args=[path_expr])
+            if w in ("cp", "copy") and (
+                self._at_word("file", 1) or self._can_follow_prefix_cmd(1)
+            ):
+                self._advance()
+                if self._at_word("file"):
+                    self._advance()
+                src_expr = self._parse_expr()
+                self._consume_word("to", f"Expected 'to' in '{w}' statement.")
+                dst_expr = self._parse_expr()
+                self._expect_end_of_statement()
+                return FileOpStmt(
+                    line=tok.line, column=tok.column, op="copy", args=[src_expr, dst_expr]
+                )
+            if w in ("mv", "move") and (
+                self._at_word("file", 1) or self._can_follow_prefix_cmd(1)
+            ):
+                self._advance()
+                if self._at_word("file"):
+                    self._advance()
+                src_expr = self._parse_expr()
+                self._consume_word("to", f"Expected 'to' in '{w}' statement.")
+                dst_expr = self._parse_expr()
+                self._expect_end_of_statement()
+                return FileOpStmt(
+                    line=tok.line, column=tok.column, op="move", args=[src_expr, dst_expr]
+                )
             if w in ("say", "print"):
                 return self._parse_say()
             if w == "if":
@@ -586,6 +680,94 @@ class Parser:
             return Literal(line=tok.line, column=tok.column, value=tok.value)
         return self._parse_primary()
 
+    def _can_follow_prefix_cmd(self, offset: int = 1) -> bool:
+        tok = self._peek(offset)
+        if tok.type in (TokenType.STRING, TokenType.LPAREN, TokenType.NUMBER):
+            return True
+        if tok.type == TokenType.WORD:
+            if tok.lower in {
+                "to",
+                "be",
+                "as",
+                "is",
+                "equals",
+                "equal",
+                "in",
+                "and",
+                "or",
+                "then",
+                "otherwise",
+                "else",
+                "colour",
+                "color",
+                "on",
+                "background",
+            }:
+                return False
+            return self._can_start_expr(offset)
+        return False
+
+    def _consume_anchor_phrase(self) -> Expr | None:
+        tok = self._peek()
+        if tok.type != TokenType.WORD or tok.lower not in _POS_ANCHOR_WORDS:
+            return None
+        w1 = str(self._advance().lower)
+        w2: str | None = None
+        if (
+            self._peek().type == TokenType.MINUS
+            and self._peek(1).type == TokenType.WORD
+            and self._peek(1).lower in _POS_ANCHOR_WORDS
+        ):
+            self._advance()
+            w2 = str(self._advance().lower)
+        elif (
+            self._peek().type == TokenType.WORD
+            and self._peek().lower in _POS_ANCHOR_WORDS
+            and w1 in ("top", "bottom", "middle", "center", "centre")
+        ):
+            w2 = str(self._advance().lower)
+        val = f"{w1}-{w2}" if w2 is not None else w1
+        return Literal(line=tok.line, column=tok.column, value=val)
+
+    def _parse_position_spec(self) -> tuple[Expr | None, Expr | None, Expr | None]:
+        anchor: Expr | None = None
+        x_expr: Expr | None = None
+        y_expr: Expr | None = None
+        if self._at_word("at"):
+            self._advance()
+        if self._peek().type == TokenType.FLAG:
+            opts = self._parse_flag_options()
+            anchor = opts.get("anchor") or opts.get("at")
+            x_expr = opts.get("x")
+            y_expr = opts.get("y")
+        if anchor is None:
+            anchor = self._consume_anchor_phrase()
+        if anchor is None and x_expr is None and y_expr is None:
+            nxt = self._peek()
+            if nxt.type == TokenType.STRING:
+                self._advance()
+                anchor = Literal(line=nxt.line, column=nxt.column, value=str(nxt.value))
+            elif nxt.type in (TokenType.NUMBER, TokenType.LPAREN) or self._can_follow_prefix_cmd(0):
+                x_expr = self._parse_additive()
+                if self._peek().type == TokenType.COMMA:
+                    self._advance()
+                nxt2 = self._peek()
+                if nxt2.type in (TokenType.NUMBER, TokenType.LPAREN) or self._can_follow_prefix_cmd(0):
+                    y_expr = self._parse_additive()
+        if self._peek().type == TokenType.FLAG:
+            opts2 = self._parse_flag_options()
+            if anchor is None:
+                anchor = opts2.get("anchor") or opts2.get("at")
+            if x_expr is None:
+                x_expr = opts2.get("x")
+            if y_expr is None:
+                y_expr = opts2.get("y")
+        if anchor is None and x_expr is None and y_expr is None:
+            raise self._error(
+                "Expected a screen position like 'center', 'top-right', or coordinates 'x, y'."
+            )
+        return anchor, x_expr, y_expr
+
     def _parse_say(self) -> SayStmt:
         tok = self._advance()
         if self._peek().type in (TokenType.NEWLINE, TokenType.EOF, TokenType.DEDENT):
@@ -596,6 +778,9 @@ class Parser:
         styles: list[str] = []
         position: str | None = None
         anchor: str | None = None
+        pos_anchor: Expr | None = None
+        pos_x: Expr | None = None
+        pos_y: Expr | None = None
 
         while self._peek().type == TokenType.WORD:
             w = self._peek().lower
@@ -630,6 +815,10 @@ class Parser:
                 if w not in styles:
                     styles.append(w)
                 continue
+            if w in ("pos", "position"):
+                self._advance()
+                pos_anchor, pos_x, pos_y = self._parse_position_spec()
+                continue
             if w == "below":
                 self._advance()
                 position = "below"
@@ -656,6 +845,9 @@ class Parser:
             styles=styles,
             position=position,
             anchor=anchor,
+            pos_anchor=pos_anchor,
+            pos_x=pos_x,
+            pos_y=pos_y,
         )
 
     def _parse_if(self) -> IfStmt:
@@ -855,8 +1047,11 @@ class Parser:
         tok = self._advance()
         value = self._parse_expr()
         self._consume_word("to", f"Expected 'to' in '{tok.lower}' statement.")
-        if tok.lower == "append" and self._at_word("file"):
-            self._advance()
+        if tok.lower == "append" and (
+            self._at_word("file") or self._peek().type == TokenType.STRING
+        ):
+            if self._at_word("file"):
+                self._advance()
             path = self._parse_expr()
             self._expect_end_of_statement()
             return WriteFileStmt(
@@ -891,7 +1086,9 @@ class Parser:
     def _parse_write_file(self) -> WriteFileStmt:
         tok = self._advance()
         content = self._parse_expr()
-        self._consume_words("to", "file")
+        self._consume_word("to", "Expected 'to' in 'write' statement.")
+        if self._at_word("file"):
+            self._advance()
         path = self._parse_expr()
         self._expect_end_of_statement()
         return WriteFileStmt(
@@ -954,7 +1151,18 @@ class Parser:
                 TokenType.RPAREN,
             ):
                 nxt = self._peek()
-                if nxt.type == TokenType.WORD and nxt.lower in (
+                if stage_lower not in ("pos", "position") and nxt.type == TokenType.WORD and nxt.lower in (
+                    "then",
+                    "otherwise",
+                    "else",
+                    "below",
+                    "centered",
+                    "centred",
+                    "pos",
+                    "position",
+                ):
+                    break
+                if stage_lower in ("pos", "position") and nxt.type == TokenType.WORD and nxt.lower in (
                     "then",
                     "otherwise",
                     "else",
@@ -977,6 +1185,38 @@ class Parser:
                 if nxt.type == TokenType.FLAG:
                     options.update(self._parse_flag_options())
                     continue
+
+                if stage_lower in ("pos", "position"):
+                    if self._at_word("at"):
+                        self._advance()
+                        continue
+                    anch = self._consume_anchor_phrase()
+                    if anch is not None:
+                        args.append(anch)
+                        continue
+                    if nxt.type in (TokenType.NUMBER, TokenType.STRING, TokenType.LPAREN):
+                        args.append(self._parse_primary())
+                        if self._peek().type == TokenType.COMMA and self._peek(1).type in (
+                            TokenType.NUMBER,
+                            TokenType.LPAREN,
+                        ):
+                            self._advance()
+                            args.append(self._parse_primary())
+                        continue
+                    break
+
+                if stage_lower == "grep":
+                    if nxt.type == TokenType.MINUS and self._peek(1).type == TokenType.WORD:
+                        sw = self._peek(1).lower
+                        if sw in ("i", "v"):
+                            self._advance()
+                            self._advance()
+                            options[sw] = Literal(line=nxt.line, column=nxt.column, value=True)
+                            continue
+                    if nxt.type == TokenType.WORD and not args:
+                        self._advance()
+                        args.append(Literal(line=nxt.line, column=nxt.column, value=str(nxt.value)))
+                        continue
 
                 if stage_lower in ("colour", "color"):
                     if nxt.type == TokenType.WORD and nxt.lower in _STYLE_WORDS:
@@ -1355,17 +1595,49 @@ class Parser:
             return BuiltinExpr(
                 line=tok.line, column=tok.column, name="random_int", args=[low, high]
             )
-        if self._at_words("read", "file"):
-            self._consume_words("read", "file")
-            return ReadFileExpr(
-                line=tok.line, column=tok.column, path=self._parse_unary()
-            )
         if self._at_words("read", "key") or self._at_words("wait", "for", "key"):
             self._advance()
             self._advance()
             if self._at_word("key"):
                 self._advance()
             return ReadKeyExpr(line=tok.line, column=tok.column)
+        if self._at_words("read", "file") or (
+            self._at_word("read") and self._peek(1).type in (TokenType.STRING, TokenType.LPAREN)
+        ):
+            self._advance()
+            if self._at_word("file"):
+                self._advance()
+            return ReadFileExpr(
+                line=tok.line, column=tok.column, path=self._parse_unary()
+            )
+        if self._at_words("load", "file") or (
+            self._at_word("load") and self._can_follow_prefix_cmd(1)
+        ):
+            self._advance()
+            if self._at_word("file"):
+                self._advance()
+            return BuiltinExpr(
+                line=tok.line, column=tok.column, name="load_file", args=[self._parse_unary()]
+            )
+        if self._peek().type == TokenType.WORD and self._peek().lower in ("shell", "exec") and self._can_follow_prefix_cmd(1):
+            self._advance()
+            return BuiltinExpr(
+                line=tok.line, column=tok.column, name="shell", args=[self._parse_unary()]
+            )
+        if self._at_word("fetch") and self._can_follow_prefix_cmd(1):
+            self._advance()
+            return BuiltinExpr(
+                line=tok.line, column=tok.column, name="fetch", args=[self._parse_unary()]
+            )
+        if self._at_words("files", "matching") or (
+            self._at_word("glob") and self._can_follow_prefix_cmd(1)
+        ):
+            self._advance()
+            if self._at_word("matching"):
+                self._advance()
+            return BuiltinExpr(
+                line=tok.line, column=tok.column, name="glob", args=[self._parse_unary()]
+            )
         if self._at_word("choose"):
             self._advance()
             prompt_expr: Expr | None = None
@@ -1380,6 +1652,34 @@ class Parser:
                 column=tok.column,
                 options=options_expr,
                 prompt=prompt_expr,
+            )
+        if self._at_word("buttons") and (
+            self._at_word("from", 1) or self._can_follow_prefix_cmd(1)
+        ):
+            self._advance()
+            btn_prompt: Expr | None = None
+            if self._at_word("from"):
+                self._advance()
+            else:
+                btn_prompt = self._parse_expr()
+                self._consume_word("from", "Expected 'from' in 'buttons ... from ...'.")
+            btn_opts_expr = self._parse_unary()
+            btn_flags = self._parse_flag_options() if self._peek().type == TokenType.FLAG else {}
+            return ButtonsExpr(
+                line=tok.line,
+                column=tok.column,
+                options=btn_opts_expr,
+                prompt=btn_prompt,
+                cols=btn_flags.get("cols"),
+            )
+        if (
+            self._peek().type == TokenType.WORD
+            and self._peek().lower in ("calc", "calculate")
+            and self._can_follow_prefix_cmd(1)
+        ):
+            self._advance()
+            return BuiltinExpr(
+                line=tok.line, column=tok.column, name="calc", args=[self._parse_unary()]
             )
         if self._at_words("file", "exists"):
             self._consume_words("file", "exists")
@@ -1559,12 +1859,98 @@ class Parser:
             return expr
         raise self._error("Expected a map key (word or text).")
 
+    def _parse_interpolated_string(self, tok: Token) -> Expr:
+        """Parse `{expr}` placeholders inside double-quoted strings safely."""
+        raw = tok.raw
+        if raw is None or "{" not in raw:
+            return Literal(line=tok.line, column=tok.column, value=tok.value)
+
+        parts: list[Expr] = []
+        buf: list[str] = []
+        escapes = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "{": "{", "}": "}"}
+        i = 0
+        n = len(raw)
+        has_dynamic = False
+
+        def flush_lit() -> None:
+            if buf:
+                parts.append(Literal(line=tok.line, column=tok.column, value="".join(buf)))
+                buf.clear()
+
+        while i < n:
+            ch = raw[i]
+            if ch == "\\" and i + 1 < n:
+                nxt = raw[i + 1]
+                buf.append(escapes.get(nxt, nxt))
+                i += 2
+                continue
+            if ch == "{":
+                depth = 1
+                j = i + 1
+                in_q: str | None = None
+                while j < n and depth > 0:
+                    c = raw[j]
+                    if c == "\\" and in_q is not None and j + 1 < n:
+                        j += 2
+                        continue
+                    if in_q is not None:
+                        if c == in_q:
+                            in_q = None
+                    elif c == '"' or (
+                        c == "'"
+                        and not (
+                            j > 0
+                            and (raw[j - 1].isalnum() or raw[j - 1] in ("_", ")"))
+                            and j + 1 < n
+                            and raw[j + 1].lower() == "s"
+                            and (j + 2 == n or not (raw[j + 2].isalnum() or raw[j + 2] == "_"))
+                        )
+                    ):
+                        in_q = c
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j += 1
+                if depth == 0:
+                    inner = raw[i + 1 : j].strip()
+                    if inner:
+                        try:
+                            from saylang.errors import SayError
+
+                            sub_prog = Parser(tokenize(inner), source=inner).parse()
+                            if len(sub_prog.statements) == 1 and isinstance(
+                                sub_prog.statements[0], ExprStmt
+                            ):
+                                flush_lit()
+                                parts.append(sub_prog.statements[0].expr)
+                                has_dynamic = True
+                                i = j + 1
+                                continue
+                        except SayError:
+                            pass
+                    buf.append(raw[i : j + 1])
+                    i = j + 1
+                    continue
+            buf.append(ch)
+            i += 1
+
+        if not has_dynamic:
+            return Literal(line=tok.line, column=tok.column, value=tok.value)
+        flush_lit()
+        return InterpolatedString(line=tok.line, column=tok.column, parts=parts)
+
     def _parse_primary(self) -> Expr:
         tok = self._peek()
 
-        if tok.type == TokenType.NUMBER or tok.type == TokenType.STRING:
+        if tok.type == TokenType.NUMBER:
             self._advance()
             return Literal(line=tok.line, column=tok.column, value=tok.value)
+        if tok.type == TokenType.STRING:
+            self._advance()
+            return self._parse_interpolated_string(tok)
 
         if tok.type == TokenType.LPAREN:
             self._advance()
