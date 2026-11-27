@@ -58,16 +58,17 @@ flags: -d
 
 Run it with `saylang examples/clock.pl -d` — or build a live ticking clock using `every 1 second` + `clear screen` (see `examples/live_clock.pl`).
 
-## Built-in `nana` Editor
+## Built-in `nana` TUI Editor
 
-Edit `.pl` files with live SayLang syntax highlighting, smart auto-indent, live syntax status, and in-editor run (`Ctrl+R`):
+Launch the interactive `nana` TUI studio (with New File, Starter Templates + live preview, `.pl` File Browser, Run with Flags, Cheat Sheet, live syntax highlighting, smart auto-indent, and in-editor `Ctrl+R` runner):
 
 ```sh
+saylang nana
 saylang nana clock.pl
 ```
 
 Or type `nana` (or `nana clock.pl`) directly inside the `saylang` REPL.
-- `Ctrl+S` Save · `Ctrl+R` Run · `Ctrl+K` Cut line · `Ctrl+U` Paste line · `Ctrl+G` Help · `Ctrl+X` Exit
+- `Ctrl+S` Save · `Ctrl+R` Run · `Ctrl+P` TUI Menu · `Ctrl+K` Cut · `Ctrl+U` Paste · `Ctrl+G` Help · `Ctrl+X` Exit
 
 ## Syntax Cheat Sheet
 

@@ -1,4 +1,4 @@
-"""Tests for the built-in `nana` SayLang text editor and syntax highlighter."""
+"""Tests for the built-in `nana` TUI studio, templates, file browser, and highlighter."""
 
 import io
 import re
@@ -8,7 +8,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saylang.cli import main
-from saylang.nana import NanaBuffer, highlight_saylang_line
+from saylang.nana import (
+    NANA_TEMPLATES,
+    NanaBuffer,
+    discover_pl_files,
+    highlight_saylang_line,
+    render_file_picker,
+    render_template_picker,
+    render_welcome_menu,
+)
+from saylang.parser import parse_source
 from saylang.repl import SayREPL
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -29,6 +38,52 @@ class TestNanaEditor(unittest.TestCase):
             highlighted = highlight_saylang_line(line)
             self.assertEqual(_ANSI_RE.sub("", highlighted), line)
             self.assertIn("\x1b[", highlighted)
+
+    def test_all_builtin_templates_parse_cleanly_and_load_into_buffer(self) -> None:
+        self.assertGreaterEqual(len(NANA_TEMPLATES), 5)
+        for tpl in NANA_TEMPLATES:
+            with self.subTest(template=tpl.id):
+                parse_source(tpl.code)
+                buf = NanaBuffer.from_template(tpl)
+                self.assertTrue(buf.modified)
+                self.assertEqual(buf.filepath, Path(tpl.filename))
+                ok, msg = buf.check_syntax()
+                self.assertTrue(ok, msg)
+
+    def test_discover_pl_files_skips_ignored_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "a.pl").write_text('say "a"\n', encoding="utf-8")
+            (root / "sub").mkdir()
+            (root / "sub" / "b.pl").write_text('say "b"\n', encoding="utf-8")
+            (root / ".git").mkdir()
+            (root / ".git" / "ignored.pl").write_text('say "no"\n', encoding="utf-8")
+            (root / "__pycache__").mkdir()
+            (root / "__pycache__" / "ignored2.pl").write_text('say "no"\n', encoding="utf-8")
+
+            found = discover_pl_files(root)
+            rel = [str(p.relative_to(root.resolve())) for p in found]
+            self.assertEqual(rel, ["a.pl", str(Path("sub") / "b.pl")])
+
+    def test_tui_screens_render_cleanly_wide_and_narrow(self) -> None:
+        examples_dir = Path(__file__).resolve().parent.parent / "examples"
+        files = discover_pl_files(examples_dir)
+        for rows, cols in ((30, 100), (20, 60)):
+            welcome = render_welcome_menu(1, rows, cols, has_active_buffer=False)
+            self.assertIn("New File", welcome)
+            self.assertIn("Start from Template", welcome)
+            self.assertIn("Open File", welcome)
+
+            welcome_active = render_welcome_menu(0, rows, cols, has_active_buffer=True)
+            self.assertIn("Resume Editor", welcome_active)
+            self.assertIn("Run with Flags", welcome_active)
+
+            tpl_screen = render_template_picker(1, rows, cols)
+            self.assertIn("TTY Clock", tpl_screen)
+
+            file_screen = render_file_picker(files, 0, rows, cols, root=examples_dir)
+            self.assertIn(".pl", file_screen)
+            self.assertIn("[Type custom path...]", file_screen)
 
     def test_buffer_editing_auto_indent_cut_paste_and_save(self) -> None:
         buf = NanaBuffer()
@@ -65,6 +120,7 @@ class TestNanaEditor(unittest.TestCase):
         frame = buf.render_frame(rows=20, cols=80)
         self.assertIn("NANA", frame)
         self.assertIn("^S Save", frame)
+        self.assertIn("^P Menu", frame)
         self.assertIn("^R Run", frame)
 
     def test_cli_and_repl_launch_nana(self) -> None:
