@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pprint
 import subprocess
 import sys
@@ -191,6 +192,18 @@ def _format_size(num_bytes: int) -> str:
     return f"{(num_bytes + 1023) // 1024} KB"
 
 
+def _silence_broken_pipe() -> None:
+    """Redirect stdout to devnull after EPIPE so interpreter teardown stays quiet."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
+    except OSError:
+        pass
+
+
 def _run_embedded_if_present(
     exe_path: Path | None = None,
     cli_args: list[str] | None = None,
@@ -207,6 +220,9 @@ def _run_embedded_if_present(
             if _print_script_flag_help(display_name, app.source, standalone=True):
                 return 0
         run_source(app.source, cli_args=forwarded)
+        return 0
+    except BrokenPipeError:
+        _silence_broken_pipe()
         return 0
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
@@ -363,6 +379,9 @@ def main(argv: list[str] | None = None) -> int:
                 run_source(res.say_code)
             return 0
 
+    except BrokenPipeError:
+        _silence_broken_pipe()
+        return 0
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
         return 130
