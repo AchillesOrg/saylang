@@ -49,6 +49,8 @@ python3 scripts/build_app.py
 
 ```sh
 saylang run examples/hello.pl
+saylang build examples/clock.pl -o clock   # make a standalone runnable binary
+saylang compile examples/clock.pl --bin    # same: make a standalone binary
 saylang examples/clock.pl -d
 saylang examples/fizzbuzz.pl
 saylang compile examples/fibonacci.pl --run
@@ -111,7 +113,7 @@ saylang nana clock.pl
 ```
 
 Or type `nana` (or `nana clock.pl`) directly inside the `saylang` REPL.
-- `Ctrl+S` Save · `Ctrl+R` Run · `Ctrl+P` TUI Menu · `Ctrl+K` Cut · `Ctrl+U` Paste · `Ctrl+G` Help · `Ctrl+X` Exit
+- `Ctrl+S` Save · `Ctrl+R` Run · `Ctrl+B` Build binary · `Ctrl+P` TUI Menu · `Ctrl+K` Cut · `Ctrl+U` Paste · `Ctrl+G` Help · `Ctrl+X` Exit
 
 ## Syntax Cheat Sheet
 
@@ -171,7 +173,8 @@ if it fails with error
 - `saylang learn [n | --list | --reset]` — launch the interactive freeCodeCamp-style TUI course
 - `saylang nana [file.pl]` — launch the built-in `nana` TUI studio & editor
 - `saylang run <file.pl>` (or `saylang <file.pl>`) — execute a SayLang program
-- `saylang compile <file.pl> [-o out.py] [--run]` — transpile to standalone Python 3
+- `saylang build <file.pl> [-o <out>] [--run]` — turn a SayLang program into a standalone native binary
+- `saylang compile <file.pl> [--bin] [-o <out>] [--run]` — compile to a standalone binary (`--bin`) or Python 3 file
 - `saylang check <file.pl>` — check syntax without running
 - `saylang ast <file.pl>` — print the parsed AST
 - `saylang english "<instructions>" [--provider auto|offline|gemini|openai|anthropic] [--run] [--compile]` — translate loose English into SayLang

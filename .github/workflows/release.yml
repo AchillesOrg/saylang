@@ -64,6 +64,21 @@ jobs:
           "./${{ matrix.asset }}" learn --list > /dev/null
           "./${{ matrix.asset }}" compile examples/fizzbuzz.pl > /dev/null
           "./${{ matrix.asset }}" english "print hello world lol in red" --provider offline --run
+          "./${{ matrix.asset }}" build examples/hello.pl -o ./hello_bin | grep -q "Built standalone binary"
+          if [ -f ./hello_bin.exe ]; then
+            ./hello_bin.exe | grep -q "Hello"
+          else
+            ./hello_bin | grep -q "Hello"
+          fi
+          "./${{ matrix.asset }}" compile examples/clock.pl --bin -o ./clock_bin > /dev/null
+          if [ -f ./clock_bin.exe ]; then
+            ./clock_bin.exe --help | grep -q -- "-d"
+            ./clock_bin.exe -d > /dev/null
+          else
+            ./clock_bin --help | grep -q -- "-d"
+            ./clock_bin -d > /dev/null
+          fi
+          rm -f hello_bin hello_bin.exe clock_bin clock_bin.exe
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}

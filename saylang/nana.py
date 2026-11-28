@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from saylang import __version__, runtime
+from saylang.bundler import build_standalone_binary, default_output_path
 from saylang.errors import SayError
 from saylang.interpreter import run_source
 from saylang.parser import parse_source
@@ -439,9 +440,9 @@ Errors       try ... if it fails with err ...
 
 nana Shortcuts
 ──────────────
-Ctrl+S  Save      Ctrl+R  Run buffer    Ctrl+P  TUI Menu
-Ctrl+K  Cut line  Ctrl+U  Paste line    Ctrl+G  Help
-Ctrl+X  Exit"""
+Ctrl+S  Save      Ctrl+R  Run buffer    Ctrl+B  Build binary
+Ctrl+P  TUI Menu  Ctrl+K  Cut line      Ctrl+U  Paste line
+Ctrl+G  Help      Ctrl+X  Exit"""
 
 
 def _vis_len(text: str) -> int:
@@ -938,7 +939,7 @@ class NanaBuffer:
         extra = f"  │  {self.status}" if self.status else ""
         screen_lines.append(f" {syn_badge}{extra}")
 
-        footer = " ^S Save   ^R Run   ^P Menu   ^K Cut   ^U Paste   ^G Help   ^X Exit "
+        footer = " ^S Save   ^R Run   ^B Build   ^P Menu   ^K Cut   ^U Paste   ^G Help   ^X Exit "
         screen_lines.append(f"{_DIM}{footer[:cols]}{_RESET}")
 
         cur_r = (self.row - self.scroll_y) + 3
@@ -1816,13 +1817,14 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
                     buf._clamp_col()
                     continue
                 if m_row == rows_e:
-                    footer = " ^S Save   ^R Run   ^P Menu   ^K Cut   ^U Paste   ^G Help   ^X Exit "
+                    footer = " ^S Save   ^R Run   ^B Build   ^P Menu   ^K Cut   ^U Paste   ^G Help   ^X Exit "
                     mapped = _footer_shortcut_hit(
                         footer[:cols_e],
                         m_col,
                         [
                             ("^S Save", "\x13"),
                             ("^R Run", "\x12"),
+                            ("^B Build", "\x02"),
                             ("^P Menu", "\x10"),
                             ("^K Cut", "\x0b"),
                             ("^U Paste", "\x15"),
@@ -1893,6 +1895,26 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
 
             if key == "\x12":  # Ctrl+R Run
                 _run_buffer(buf, bg_mode=bg_state[0], tty_state=tty_state)
+                continue
+
+            if key == "\x02":  # Ctrl+B Build Binary
+                def_out = default_output_path(buf.filepath)
+                target = _prompt_bar(
+                    "Build binary as: ",
+                    str(def_out),
+                    buf=buf,
+                    bg_mode=bg_state[0],
+                )
+                if target:
+                    try:
+                        res = build_standalone_binary(
+                            source=buf.text(),
+                            name=buf.filepath.name if buf.filepath else "app.pl",
+                            output_path=Path(target),
+                        )
+                        buf.status = f"Built binary: {res.output_path}"
+                    except (SayError, RuntimeError, OSError) as exc:
+                        buf.status = f"Build failed: {exc}"
                 continue
 
             if key == "\x07":  # Ctrl+G Help

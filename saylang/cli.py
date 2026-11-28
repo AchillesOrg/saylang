@@ -12,6 +12,7 @@ from pathlib import Path
 from saylang import __version__
 from saylang.ast_nodes import FlagsDeclStmt
 from saylang.banner import render_startup_banner
+from saylang.bundler import build_standalone_binary, read_embedded_app
 from saylang.errors import SayError
 from saylang.interpreter import run_source
 from saylang.learn import run_learn
@@ -22,7 +23,18 @@ from saylang.runtime import say_configure_utf8_stdio
 from saylang.translator import translate_english
 from saylang.transpiler import compile_to_python
 
-_SUBCOMMANDS = {"run", "compile", "check", "ast", "english", "repl", "banner", "nana", "learn"}
+_SUBCOMMANDS = {
+    "run",
+    "build",
+    "compile",
+    "check",
+    "ast",
+    "english",
+    "repl",
+    "banner",
+    "nana",
+    "learn",
+}
 
 
 def _read_source(path_str: str) -> str:
@@ -49,16 +61,48 @@ def _build_parser() -> argparse.ArgumentParser:
         "script_args", nargs=argparse.REMAINDER, help="Flags forwarded to the script"
     )
 
-    p_compile = sub.add_parser("compile", help="Transpile a .pl file to Python.")
+    p_compile = sub.add_parser(
+        "compile",
+        help="Transpile a .pl file to Python, or pass --bin for a standalone binary.",
+    )
     p_compile.add_argument("file", help="Path to the .pl file")
     p_compile.add_argument(
-        "-o", "--output", help="Write compiled Python to this file"
+        "-o", "--output", help="Write compiled output (Python or binary) to this file"
+    )
+    p_compile.add_argument(
+        "--bin",
+        action="store_true",
+        dest="build_bin",
+        help="Compile to a standalone native executable binary instead of Python",
+    )
+    p_compile.add_argument(
+        "--runtime",
+        help="Optional path to standalone saylang runtime binary when building with --bin",
     )
     p_compile.add_argument(
         "--run",
         action="store_true",
         dest="run_compiled",
-        help="Execute the compiled Python code after transpiling",
+        help="Execute the compiled program after building",
+    )
+
+    p_build = sub.add_parser(
+        "build",
+        help="Compile a .pl program into a standalone native executable binary.",
+    )
+    p_build.add_argument("file", help="Path to the .pl file")
+    p_build.add_argument(
+        "-o", "--output", help="Output binary path (defaults to script name in current folder)"
+    )
+    p_build.add_argument(
+        "--runtime",
+        help="Optional path to standalone saylang runtime binary",
+    )
+    p_build.add_argument(
+        "--run",
+        action="store_true",
+        dest="run_built",
+        help="Execute the built binary after compiling",
     )
 
     p_check = sub.add_parser("check", help="Check a .pl file for syntax errors.")
@@ -122,7 +166,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_script_flag_help(file_path: str, source: str) -> bool:
+def _print_script_flag_help(
+    file_path: str, source: str, *, standalone: bool = False
+) -> bool:
     """If the script declares `flags:`, print flag usage and return True."""
     program = parse_source(source)
     declared: list[str] = []
@@ -131,16 +177,82 @@ def _print_script_flag_help(file_path: str, source: str) -> bool:
             declared.extend(stmt.flags)
     if not declared:
         return False
-    print(f"Usage: saylang {file_path} [{' '.join(declared)}]")
+    prefix = file_path if standalone else f"saylang {file_path}"
+    print(f"Usage: {prefix} [{' '.join(declared)}]")
     print("Declared flags:")
     for f in declared:
         print(f"  {f}")
     return True
 
 
+def _format_size(num_bytes: int) -> str:
+    if num_bytes >= 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    return f"{(num_bytes + 1023) // 1024} KB"
+
+
+def _run_embedded_if_present(
+    exe_path: Path | None = None,
+    cli_args: list[str] | None = None,
+    prog_name: str | None = None,
+) -> int | None:
+    """Run an embedded SayLang app if the current executable contains one."""
+    app = read_embedded_app(exe_path)
+    if app is None:
+        return None
+    forwarded = list(cli_args or [])
+    display_name = prog_name or app.name
+    try:
+        if any(a in ("-h", "--help") for a in forwarded):
+            if _print_script_flag_help(display_name, app.source, standalone=True):
+                return 0
+        run_source(app.source, cli_args=forwarded)
+        return 0
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
+    except SayError as err:
+        print(err.format_pretty(app.name), file=sys.stderr)
+        return 1
+
+
+def _handle_build_binary(
+    file_path: str,
+    output: str | None,
+    runtime_path: str | None,
+    run_after: bool,
+) -> int:
+    src_p = Path(file_path)
+    out_p = Path(output) if output else None
+    rt_p = Path(runtime_path) if runtime_path else None
+    res = build_standalone_binary(src_p, output_path=out_p, runtime_binary=rt_p)
+    out_str = str(res.output_path)
+    if sys.platform == "win32":
+        run_hint = out_str
+    elif res.output_path.parent == Path(".") and not out_str.startswith(("/", "./")):
+        run_hint = f"./{out_str}"
+    else:
+        run_hint = out_str
+    print(f"Built standalone binary: {out_str} ({_format_size(res.size_bytes)})")
+    print(f"Run it with: {run_hint}")
+    if run_after:
+        proc = subprocess.run([str(res.output_path.resolve())], check=False)
+        return proc.returncode
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
     say_configure_utf8_stdio()
+    if argv is None and getattr(sys, "frozen", False):
+        embedded_rc = _run_embedded_if_present(
+            Path(sys.executable),
+            list(sys.argv[1:]),
+            prog_name=Path(sys.argv[0]).name if sys.argv else None,
+        )
+        if embedded_rc is not None:
+            return embedded_rc
+
     raw_args = list(sys.argv[1:] if argv is None else argv)
 
     # Shorthand: `saylang path/to/file.pl [-d ...]` -> `saylang run path/to/file.pl [-d ...]`
@@ -198,7 +310,16 @@ def main(argv: list[str] | None = None) -> int:
             print(pprint.pformat(program, width=88))
             return 0
 
+        if args.command == "build":
+            return _handle_build_binary(
+                args.file, args.output, args.runtime, args.run_built
+            )
+
         if args.command == "compile":
+            if args.build_bin:
+                return _handle_build_binary(
+                    args.file, args.output, args.runtime, args.run_compiled
+                )
             source = _read_source(args.file)
             py_code = compile_to_python(source, standalone=True)
             if args.output:
@@ -245,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
         return 130
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except SayError as err:
