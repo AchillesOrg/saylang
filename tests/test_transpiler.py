@@ -12,7 +12,7 @@ from saylang.transpiler import compile_to_python
 _EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
 
-def _run_compiled_python(say_source: str) -> str:
+def _run_compiled_python(say_source: str, stdin_text: str | None = None) -> str:
     py_code = compile_to_python(say_source, standalone=True)
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", encoding="utf-8", delete=True
@@ -21,6 +21,7 @@ def _run_compiled_python(say_source: str) -> str:
         tmp.flush()
         proc = subprocess.run(
             [sys.executable, tmp.name],
+            input=stdin_text,
             capture_output=True,
             text=True,
             check=True,
@@ -38,6 +39,16 @@ class TestTranspiler(unittest.TestCase):
                 if path.name in ("live_clock.pl", "clock.pl"):
                     py_code = compile_to_python(src, standalone=True)
                     self.assertIn("say_lib_call", py_code)
+                    continue
+                if path.name == "mouse_calc.pl":
+                    interp_out, _ = run_and_capture(
+                        src, input_lines=["7", "+", "5", "=", "Q"]
+                    )
+                    compiled_out = _run_compiled_python(
+                        src, stdin_text="7\n+\n5\n=\nQ\n"
+                    )
+                    self.assertEqual(compiled_out, interp_out)
+                    self.assertIn("Result: 12", compiled_out)
                     continue
                 interp_out, _ = run_and_capture(src)
                 compiled_out = _run_compiled_python(src)

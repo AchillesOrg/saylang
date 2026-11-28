@@ -603,16 +603,22 @@ LESSONS: tuple[Lesson, ...] = (
             'say "You clicked {pick}"'
         ),
         challenge=(
-            'Make `keys` = `"7","8","9","/","4","5","6","*","1","2","3","-","C","0","=","+","Q"` and `screen = ""`.\n'
-            'Loop with `while true`, asking `set btn to buttons "Calc: {screen}" from keys --cols 4`.\n'
-            'If `btn` is `""` or `"Q"`, `stop`. If `"C"`, clear `screen`. If `"="`, use `try` + `calc screen`\n'
-            'into `screen` (on error set `"Error"`). Otherwise add `{btn}` onto `screen`.\n'
-            'After stopping, print `"Result: {screen}" | box --title "Calculator"`.'
+            'The clickable loop is ready — press Ctrl+R to try clicking buttons right now!\n'
+            'Next, add an `otherwise if btn is "="` branch that sets `screen` to `"{calc screen}"`\n'
+            'inside `try / if it fails with err` (showing `"Error"` if someone divides by zero).'
         ),
         starter=(
             'set keys to a list of "7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "C", "0", "=", "+", "Q"\n'
             'set screen to ""\n'
-            "# Loop clickable `buttons \"Calc: {screen}\" from keys --cols 4` until \"Q\" or \"\"\n"
+            "while true\n"
+            '    set btn to buttons "Calc: {screen}" from keys --cols 4\n'
+            '    if btn is "" or btn is "Q"\n'
+            "        stop\n"
+            '    if btn is "C"\n'
+            '        set screen to ""\n'
+            "    otherwise\n"
+            '        # Add an `otherwise if btn is "="` branch using `try` + `set screen to "{calc screen}"`\n'
+            '        set screen to "{screen}{btn}"\n'
             'say "Result: {screen}" | box --title "Calculator"\n'
         ),
         solution=(
@@ -1197,6 +1203,16 @@ def _run_lesson_preview(
     _show_overlay(f"Run Output · {lesson.title}", body, bg_mode=bg_mode)
 
 
+_LEGACY_STARTERS: dict[str, str] = {
+    "11-mouse-tui-calc": (
+        'set keys to a list of "7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "C", "0", "=", "+", "Q"\n'
+        'set screen to ""\n'
+        "# Loop clickable `buttons \"Calc: {screen}\" from keys --cols 4` until \"Q\" or \"\"\n"
+        'say "Result: {screen}" | box --title "Calculator"'
+    ),
+}
+
+
 def run_learn(
     lesson_num: int | None = None,
     *,
@@ -1326,6 +1342,9 @@ def run_learn(
         while cur_idx is not None:
             lesson = LESSONS[cur_idx]
             initial_text = drafts.get(lesson.id, lesson.starter)
+            legacy_starter = _LEGACY_STARTERS.get(lesson.id)
+            if legacy_starter is not None and initial_text.strip() == legacy_starter:
+                initial_text = lesson.starter
             buf = NanaBuffer(
                 lines=initial_text.rstrip("\n").split("\n") or [""],
                 filepath=Path(f"{lesson.id}.pl"),

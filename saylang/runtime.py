@@ -1390,7 +1390,10 @@ def say_buttons(
     if callable(flush):
         flush()
     fn = input_fn if callable(input_fn) else input
-    raw = str(fn("")).strip()
+    try:
+        raw = str(fn("")).strip()
+    except EOFError:
+        return ""
     if not raw or raw.lower() == "esc":
         return ""
     for idx, lbl in enumerate(labels):

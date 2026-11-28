@@ -1452,6 +1452,13 @@ def _run_interactive_source(
     sys.stdout.flush()
     _leave_raw_tty(tty_state[0])
     tty_state[0] = None
+    if sys.platform != "win32":
+        try:
+            import termios
+
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except Exception:
+            pass
 
     prev_cwd = os.getcwd()
     try:

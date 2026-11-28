@@ -402,6 +402,112 @@ class TestLearnAndCliTuiPrimitives(unittest.TestCase):
                     proc2.wait(timeout=2.0)
                 os.close(mfd2)
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX PTY end-to-end test")
+    def test_lesson_11_ctrl_r_runs_interactive_buttons_with_legacy_draft(self) -> None:
+        import fcntl
+        import json
+        import pty
+        import re
+        import select
+        import struct
+        import termios
+        import time
+
+        ansi_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+        with tempfile.TemporaryDirectory() as home_dir:
+            say_dir = Path(home_dir) / ".saylang"
+            say_dir.mkdir(parents=True, exist_ok=True)
+            # Pre-populate the old non-interactive v0.4.0 starter draft to verify auto-upgrade.
+            (say_dir / "learn_progress.json").write_text(
+                json.dumps(
+                    {
+                        "completed": [],
+                        "drafts": {
+                            "11-mouse-tui-calc": (
+                                'set keys to a list of "7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "C", "0", "=", "+", "Q"\n'
+                                'set screen to ""\n'
+                                '# Loop clickable `buttons "Calc: {screen}" from keys --cols 4` until "Q" or ""\n'
+                                'say "Result: {screen}" | box --title "Calculator"'
+                            )
+                        },
+                        "current": 11,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            mfd, sfd = pty.openpty()
+            fcntl.ioctl(sfd, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 100, 0, 0))
+            env = dict(os.environ, SAYLANG_HOME=home_dir)
+            env.pop("COLUMNS", None)
+            env.pop("LINES", None)
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "saylang", "learn", "11"],
+                stdin=sfd,
+                stdout=sfd,
+                stderr=sfd,
+                env=env,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                close_fds=True,
+                start_new_session=True,
+            )
+            os.close(sfd)
+
+            def drain_until_plain(marker: str, timeout_s: float = 2.5) -> str:
+                buf = bytearray()
+                dl = time.monotonic() + timeout_s
+                while time.monotonic() < dl:
+                    if select.select([mfd], [], [], 0.04)[0]:
+                        try:
+                            d = os.read(mfd, 4096)
+                            if d:
+                                buf.extend(d)
+                        except OSError:
+                            break
+                    plain = ansi_re.sub("", buf.decode("utf-8", errors="replace"))
+                    if marker in plain:
+                        return plain
+                return ansi_re.sub("", buf.decode("utf-8", errors="replace"))
+
+            try:
+                ws = drain_until_plain("Mouse TUI Calculator")
+                self.assertIn("Mouse TUI Calculator", ws)
+
+                os.write(mfd, b"\x12")  # Ctrl+R -> launch interactive buttons loop
+                buttons_screen = drain_until_plain("[ 7 ]")
+                self.assertIn("[ 7 ]", buttons_screen)
+                self.assertNotIn("Press any key to return to editor...", buttons_screen)
+
+                for ch, expect in [("7", "Calc: 7"), ("+", "Calc: 7+"), ("5", "Calc: 7+5")]:
+                    os.write(mfd, ch.encode("ascii"))
+                    step = drain_until_plain(expect)
+                    self.assertIn(expect, step)
+
+                os.write(mfd, b"Q")
+                done = drain_until_plain("Press any key to return to editor...")
+                self.assertIn("Result: 7+5", done)
+                self.assertIn("Press any key to return to editor...", done)
+
+                os.write(mfd, b" ")
+                returned = drain_until_plain("LEARN 11/12")
+                self.assertIn("LEARN 11/12", returned)
+                os.write(mfd, b"\x18")
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline:
+                    if select.select([mfd], [], [], 0.05)[0]:
+                        try:
+                            os.read(mfd, 4096)
+                        except OSError:
+                            pass
+                    if proc.poll() is not None:
+                        break
+                self.assertEqual(proc.poll(), 0)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+                os.close(mfd)
+
 
 if __name__ == "__main__":
     unittest.main()
