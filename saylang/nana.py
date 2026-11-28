@@ -1437,9 +1437,74 @@ def _show_overlay(title: str, body: str, *, bg_mode: str = "mica") -> None:
         return
 
 
-def _run_buffer(
-    buf: NanaBuffer, cli_args: list[str] | None = None, *, bg_mode: str = "mica"
+def _run_interactive_source(
+    code: str,
+    *,
+    title: str,
+    filename: str,
+    cli_args: list[str] | None,
+    tty_state: list[object],
+    cwd: str | None = None,
 ) -> None:
+    """Temporarily leave the TUI and execute SayLang code interactively in the real terminal."""
+    sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?25h\x1b[0m")
+    sys.stdout.flush()
+    _leave_raw_tty(tty_state[0])
+    tty_state[0] = None
+
+    prev_cwd = os.getcwd()
+    try:
+        if cwd is not None:
+            os.chdir(cwd)
+        sys.stdout.write(
+            f"\x1b[2J\x1b[H\x1b[1;96m▶ Running {title}\x1b[0m  \x1b[90m(Ctrl+C to stop)\x1b[0m\n"
+            f"\x1b[90m{'─' * 50}\x1b[0m\n"
+        )
+        sys.stdout.flush()
+        try:
+            run_source(code, stdout=sys.stdout, input_fn=input, cli_args=cli_args or [])
+        except KeyboardInterrupt:
+            sys.stdout.write("\n\x1b[90m(stopped)\x1b[0m\n")
+        except SystemExit as exc:
+            if exc.code not in (None, 0):
+                sys.stdout.write(f"\n\x1b[90m(exited with code {exc.code})\x1b[0m\n")
+        except SayError as err:
+            sys.stdout.write(f"\n\x1b[91m{err.format_pretty(filename)}\x1b[0m\n")
+    finally:
+        if cwd is not None:
+            os.chdir(prev_cwd)
+        sys.stdout.write(
+            f"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[0m\n\x1b[90m{'─' * 50}\n"
+            "Press any key to return to editor...\x1b[0m"
+        )
+        sys.stdout.flush()
+        tty_state[0] = _enter_raw_tty()
+        while True:
+            k = _read_key()
+            if k and k != "RESIZE":
+                break
+        sys.stdout.write("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25h")
+        sys.stdout.flush()
+
+
+def _run_buffer(
+    buf: NanaBuffer,
+    cli_args: list[str] | None = None,
+    *,
+    bg_mode: str = "mica",
+    tty_state: list[object] | None = None,
+) -> None:
+    if tty_state is not None:
+        fname = str(buf.filepath) if buf.filepath else "<nana>"
+        title = buf.filepath.name if buf.filepath else "SayLang Buffer"
+        _run_interactive_source(
+            buf.text,
+            title=title,
+            filename=fname,
+            cli_args=cli_args,
+            tty_state=tty_state,
+        )
+        return
     out_buf = io.StringIO()
     try:
         run_source(buf.text, stdout=out_buf, cli_args=cli_args)
@@ -1571,7 +1636,9 @@ def _select_file_tui(bg_state: list[str]) -> NanaBuffer | None:
 
 
 def _run_menu_tui(
-    active_buf: NanaBuffer | None, bg_state: list[str]
+    active_buf: NanaBuffer | None,
+    bg_state: list[str],
+    tty_state: list[object] | None = None,
 ) -> tuple[str, NanaBuffer | None]:
     """Show the main nana launcher/menu TUI. Returns ('edit', buf) or ('quit', None)."""
     sel = 0
@@ -1655,12 +1722,17 @@ def _run_menu_tui(
                     parsed_flags = shlex.split(raw_flags)
                 except ValueError:
                     parsed_flags = raw_flags.split()
-                _run_buffer(active_buf, cli_args=parsed_flags, bg_mode=bg_state[0])
+                _run_buffer(
+                    active_buf,
+                    cli_args=parsed_flags,
+                    bg_mode=bg_state[0],
+                    tty_state=tty_state,
+                )
                 return ("edit", active_buf)
         if chosen_action == "learn":
             from saylang.learn import run_learn
 
-            run_learn(bg=bg_state[0], _managed_tty=True)
+            run_learn(bg=bg_state[0], _managed_tty=True, _tty_state=tty_state)
             bg_state[0] = load_bg_mode()
         if chosen_action == "bg":
             bg_state[0] = save_bg_mode("black" if bg_state[0] == "mica" else "mica")
@@ -1696,14 +1768,14 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
     runtime._enable_windows_ansi()
     bg_state = [save_bg_mode(bg) if bg else load_bg_mode()]
     buf: NanaBuffer | None = NanaBuffer.from_file(filepath) if filepath else None
-    saved_tty = _enter_raw_tty()
+    tty_state: list[object] = [_enter_raw_tty()]
 
     try:
         sys.stdout.write("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25h")
         sys.stdout.flush()
 
         if buf is None:
-            action, buf = _run_menu_tui(None, bg_state)
+            action, buf = _run_menu_tui(None, bg_state, tty_state)
             if action == "quit" or buf is None:
                 return 0
 
@@ -1777,7 +1849,7 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
                     continue
 
             if key == "\x10":  # Ctrl+P -> TUI Menu
-                action, next_buf = _run_menu_tui(buf, bg_state)
+                action, next_buf = _run_menu_tui(buf, bg_state, tty_state)
                 if action == "quit":
                     return 0
                 if next_buf is not None:
@@ -1820,7 +1892,7 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
                 continue
 
             if key == "\x12":  # Ctrl+R Run
-                _run_buffer(buf, bg_mode=bg_state[0])
+                _run_buffer(buf, bg_mode=bg_state[0], tty_state=tty_state)
                 continue
 
             if key == "\x07":  # Ctrl+G Help
@@ -1860,4 +1932,4 @@ def run_nana(filepath: str | None = None, *, bg: str | None = None) -> int:
     finally:
         sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?25h\x1b[0m")
         sys.stdout.flush()
-        _leave_raw_tty(saved_tty)
+        _leave_raw_tty(tty_state[0])

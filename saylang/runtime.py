@@ -416,6 +416,16 @@ def say_set_position(
     _POS_FRAME_USED = False
 
 
+def _real_terminal_size() -> os.terminal_size:
+    """Read actual PTY dimensions from stdout fd before falling back to env vars."""
+    try:
+        if sys.stdout.isatty():
+            return os.get_terminal_size(sys.stdout.fileno())
+    except (OSError, ValueError, AttributeError):
+        pass
+    return shutil.get_terminal_size((80, 24))
+
+
 def say_position_text(
     value: object,
     anchor: object = None,
@@ -427,7 +437,7 @@ def say_position_text(
 ) -> str:
     """Position multi-line text using a 3x3 terminal anchor or 1-based (x, y) coords."""
     global _LAST_PRINT_COL, _LAST_PRINT_WIDTH, _POS_FRAME_USED, _JUST_POSITIONED
-    term = shutil.get_terminal_size((80, 24))
+    term = _real_terminal_size() if sys.stdout.isatty() else shutil.get_terminal_size((80, 24))
     cols = int(width) if width is not None and _is_number(width) else term.columns  # type: ignore[arg-type]
     rows = int(height) if height is not None and _is_number(height) else term.lines  # type: ignore[arg-type]
     cols = max(cols, 1)
@@ -1278,7 +1288,7 @@ def say_buttons(
         first = True
         try:
             while True:
-                term = shutil.get_terminal_size((80, 24))
+                term = _real_terminal_size()
                 total_h = rows_n + 4
                 top_row = max((term.lines - total_h) // 2 + 1, 1)
                 left_col = max((term.columns - panel_w) // 2 + 1, 1)

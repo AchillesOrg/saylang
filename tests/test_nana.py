@@ -321,6 +321,81 @@ class TestNanaEditor(unittest.TestCase):
             "\x12",
         )
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX PTY end-to-end test")
+    def test_nana_pty_interactive_ctrl_r_run(self) -> None:
+        import fcntl
+        import pty
+        import re
+        import struct
+        import tempfile
+        import termios
+
+        ansi_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "greet.pl"
+            script.write_text('set who to ask "Name? "\nsay "Hello {who}!"\n', encoding="utf-8")
+            mfd, sfd = pty.openpty()
+            fcntl.ioctl(sfd, termios.TIOCSWINSZ, struct.pack("HHHH", 26, 90, 0, 0))
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "saylang", "nana", str(script)],
+                stdin=sfd,
+                stdout=sfd,
+                stderr=sfd,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                close_fds=True,
+            )
+            os.close(sfd)
+
+            def drain_until_plain(marker: str, timeout_s: float = 2.5) -> str:
+                buf = bytearray()
+                dl = time.monotonic() + timeout_s
+                while time.monotonic() < dl:
+                    if select.select([mfd], [], [], 0.04)[0]:
+                        try:
+                            d = os.read(mfd, 4096)
+                            if d:
+                                buf.extend(d)
+                        except OSError:
+                            break
+                    plain = ansi_re.sub("", buf.decode("utf-8", errors="replace"))
+                    if marker in plain:
+                        return plain
+                return ansi_re.sub("", buf.decode("utf-8", errors="replace"))
+
+            try:
+                ed0 = drain_until_plain("Ln 1, Col 1")
+                self.assertIn("Ln 1, Col 1", ed0)
+
+                # Press Ctrl+R -> drops to real interactive terminal for ask "Name? "
+                os.write(mfd, b"\x12")
+                prompt_txt = drain_until_plain("Name? ")
+                self.assertIn("Name? ", prompt_txt)
+
+                os.write(mfd, b"Ada\r")
+                run_txt = drain_until_plain("Press any key to return to editor")
+                self.assertIn("Hello Ada!", run_txt)
+
+                os.write(mfd, b"\r")
+                ed1 = drain_until_plain("Ln 1, Col 1")
+                self.assertIn("Ln 1, Col 1", ed1)
+
+                os.write(mfd, b"\x18")
+                dl = time.monotonic() + 3.0
+                while time.monotonic() < dl:
+                    if select.select([mfd], [], [], 0.05)[0]:
+                        try:
+                            os.read(mfd, 4096)
+                        except OSError:
+                            pass
+                    if proc.poll() is not None:
+                        break
+                self.assertEqual(proc.poll(), 0)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+                os.close(mfd)
+
 
 if __name__ == "__main__":
     unittest.main()

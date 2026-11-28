@@ -24,6 +24,7 @@ from saylang.nana import (
     _parse_mouse_event,
     _prompt_bar,
     _read_key,
+    _run_interactive_source,
     _show_overlay,
     _vis_len,
     highlight_saylang_line,
@@ -1147,17 +1148,38 @@ def _format_brief_overlay(lesson: Lesson, results: list[TestResult], hint_idx: i
     return "\n".join(parts)
 
 
-def _run_lesson_preview(lesson: Lesson, code: str, *, bg_mode: str = "mica") -> None:
-    """Run current lesson code safely and display output overlay."""
+def _run_lesson_preview(
+    lesson: Lesson,
+    code: str,
+    *,
+    bg_mode: str = "mica",
+    tty_state: list[object] | None = None,
+) -> None:
+    """Run current lesson code interactively in the terminal (or capture offline)."""
     sample = lesson.tests[0] if lesson.tests else None
     cli_args = list(sample.cli_args) if sample else []
+    tmp_ctx = tempfile.TemporaryDirectory() if (sample and sample.use_temp_dir) else None
+    if tty_state is not None:
+        try:
+            _run_interactive_source(
+                code,
+                title=lesson.title,
+                filename=f"{lesson.id}.pl",
+                cli_args=cli_args,
+                tty_state=tty_state,
+                cwd=tmp_ctx.name if tmp_ctx is not None else None,
+            )
+        finally:
+            if tmp_ctx is not None:
+                tmp_ctx.cleanup()
+        return
+
     inputs = (
         list(sample.input_lines)
         if sample and sample.input_lines is not None
         else []
     )
     prev_cwd = os.getcwd()
-    tmp_ctx = tempfile.TemporaryDirectory() if (sample and sample.use_temp_dir) else None
     try:
         if tmp_ctx is not None:
             os.chdir(tmp_ctx.name)
@@ -1182,6 +1204,7 @@ def run_learn(
     reset: bool = False,
     bg: str | None = None,
     _managed_tty: bool = False,
+    _tty_state: list[object] | None = None,
 ) -> int:
     """Launch the freeCodeCamp-style `saylang learn` TUI course."""
     runtime.say_configure_utf8_stdio()
@@ -1209,7 +1232,11 @@ def run_learn(
         return 1
 
     runtime._enable_windows_ansi()
-    saved_tty = None if _managed_tty else _enter_raw_tty()
+    tty_state = (
+        _tty_state
+        if _tty_state is not None
+        else [None if _managed_tty else _enter_raw_tty()]
+    )
 
     try:
         if not _managed_tty:
@@ -1450,7 +1477,9 @@ def run_learn(
                     continue
 
                 if key == "\x12":  # Ctrl+R -> Run Live
-                    _run_lesson_preview(lesson, buf.text, bg_mode=bg_state[0])
+                    _run_lesson_preview(
+                        lesson, buf.text, bg_mode=bg_state[0], tty_state=tty_state
+                    )
                     continue
 
                 if key == "\x08":  # Ctrl+H -> Hint / Solution
@@ -1530,4 +1559,4 @@ def run_learn(
         if not _managed_tty:
             sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?25h\x1b[0m")
             sys.stdout.flush()
-            _leave_raw_tty(saved_tty)
+            _leave_raw_tty(tty_state[0])
